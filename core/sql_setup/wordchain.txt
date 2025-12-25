@@ -1,0 +1,60 @@
+-- ============================================
+-- Word Chain Game Database Schema (Players Mode)
+-- ============================================
+
+-- 1. Sessions (game instance per guild)
+CREATE TABLE wordchain_sessions (
+    id SERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL,
+    creator_id BIGINT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    given_time INT NOT NULL,                 -- starting time (sec) per player
+    max_players INT NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'waiting', -- waiting, active, finished
+    current_player_id INT,                   -- FK → wordchain_players(id)
+    last_word TEXT
+);
+
+-- 2. Players (belong to a session)
+CREATE TABLE wordchain_players (
+    id SERIAL PRIMARY KEY,
+    session_id INT NOT NULL REFERENCES wordchain_sessions(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL,
+    time_left INT NOT NULL,                  -- countdown clock (sec)
+    player_order INT NOT NULL,               -- turn cycle order (0..n)
+    eliminated BOOLEAN NOT NULL DEFAULT FALSE,
+    joined_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (session_id, user_id)             -- no duplicate players per game
+);
+
+-- 3. Words (history of submitted words)
+CREATE TABLE wordchain_words (
+    id SERIAL PRIMARY KEY,
+    session_id INT NOT NULL REFERENCES wordchain_sessions(id) ON DELETE CASCADE,
+    player_id INT NOT NULL REFERENCES wordchain_players(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL,
+    word TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    valid BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+-- Link sessions.current_player_id → players.id
+ALTER TABLE wordchain_sessions
+ADD CONSTRAINT fk_current_player
+FOREIGN KEY (current_player_id) REFERENCES wordchain_players(id) ON DELETE SET NULL;
+
+-- ============================================
+-- Indexes for speed
+-- ============================================
+
+-- Fast lookup by guild (for multi-guild bots)
+CREATE INDEX idx_sessions_guild ON wordchain_sessions(guild_id);
+
+-- Speed up word existence checks in a session
+CREATE INDEX idx_words_session_word ON wordchain_words(session_id, word);
+
+-- Quick access to latest words (descending order)
+CREATE INDEX idx_words_session_time ON wordchain_words(session_id, created_at DESC);
+
+-- Player lookup inside a session
+CREATE INDEX idx_players_session_user ON wordchain_players(session_id, user_id);
