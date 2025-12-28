@@ -4,6 +4,7 @@ from warnings import deprecated
 import logging
 import discord
 from discord.ext import commands
+import json
 
 from utils.economy import format_number
 import os
@@ -81,7 +82,7 @@ async def ensure_guild(db, guild_id: int):
             """, guild_id)
 
 
-# Global fund functions removed - gambling now uses coin appearance/disappearance model
+
 
 async def check_has_user_upvoted(user_id):
     try:
@@ -120,7 +121,6 @@ async def ensure_guild_cfg(pool, guild_id: int):
             """, guild_id)
 
 
-# Log hourly spending
 async def log_spending(db, amount: int):
     now = datetime.now(timezone.utc)
     day = now.date()
@@ -134,7 +134,7 @@ async def log_spending(db, amount: int):
         """, day, hour, amount)
 
 
-# Ensure mining data for guild
+
 async def ensure_mine(db, guild_id: int):
     try:
         async with db.acquire() as conn:
@@ -157,3 +157,205 @@ async def get_bet_cap(user_id):
     except Exception as e:
         print(e)
 
+
+async def ensure_relationship(db, user_id: int):
+    pass
+
+
+async def get_relationship_data(db, user_id: int):
+    async with db.acquire() as conn:
+        parent_row = await conn.fetchrow("""
+            SELECT parent_id FROM parents
+            WHERE child_id = $1
+        """, user_id)
+        return {'father_id': parent_row['parent_id'] if parent_row else None, 'mother_id': None}
+
+
+async def get_user_partners(db, user_id: int):
+    async with db.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT partner_id, timestamp
+            FROM marriages
+            WHERE user_id = $1
+            UNION
+            SELECT user_id as partner_id, timestamp
+            FROM marriages
+            WHERE partner_id = $1
+        """, user_id)
+        return [row['partner_id'] for row in rows]
+
+
+async def get_marriage_date(db, user1_id: int, user2_id: int):
+    async with db.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT timestamp FROM marriages
+            WHERE (user_id = $1 AND partner_id = $2) OR (user_id = $2 AND partner_id = $1)
+        """, user1_id, user2_id)
+        return row['timestamp'] if row else None
+
+
+async def get_user_children(db, user_id: int):
+    async with db.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT child_id FROM parents
+            WHERE parent_id = $1
+        """, user_id)
+        return [row['child_id'] for row in rows]
+
+
+async def add_partner(db, user_id: int, partner_id: int, marriage_date=None):
+    if marriage_date is None:
+        marriage_date = datetime.now(timezone.utc)
+    
+    async with db.acquire() as conn:
+        existing = await conn.fetchrow("""
+            SELECT 1 FROM marriages
+            WHERE (user_id = $1 AND partner_id = $2) OR (user_id = $2 AND partner_id = $1)
+        """, user_id, partner_id)
+        if existing:
+            return False
+        
+        await conn.execute("""
+            INSERT INTO marriages (user_id, partner_id, timestamp)
+            VALUES ($1, $2, $3)
+        """, user_id, partner_id, marriage_date)
+        return True
+
+
+async def remove_partner(db, user_id: int, partner_id: int):
+    async with db.acquire() as conn:
+        result = await conn.execute("""
+            DELETE FROM marriages
+            WHERE (user_id = $1 AND partner_id = $2) OR (user_id = $2 AND partner_id = $1)
+        """, user_id, partner_id)
+        return result != "DELETE 0"
+
+
+async def add_child(db, father_id: int, mother_id: int, child_id: int):
+    parent_id = father_id if father_id else mother_id
+    if parent_id:
+        async with db.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO parents (child_id, parent_id, timestamp)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (child_id, guild_id) DO UPDATE SET parent_id = $2, timestamp = $3
+            """, child_id, parent_id, datetime.now(timezone.utc))
+
+
+async def remove_child_relationship(db, child_id: int):
+    async with db.acquire() as conn:
+        await conn.execute("""
+            DELETE FROM parents
+            WHERE child_id = $1
+        """, child_id)
+
+
+async def is_parent_child(db, user_id: int, other_id: int, max_depth: int = 20):
+    if user_id == other_id:
+        return False
+    
+    async with db.acquire() as conn:
+        parent_row = await conn.fetchrow("""
+            SELECT parent_id FROM parents WHERE child_id = $1
+        """, user_id)
+        if parent_row and parent_row['parent_id'] == other_id:
+            return True
+        
+        child_rows = await conn.fetch("""
+            SELECT child_id FROM parents WHERE parent_id = $1
+        """, user_id)
+        for row in child_rows:
+            if row['child_id'] == other_id:
+                return True
+    
+    return False
+
+
+async def is_sibling(db, user_id: int, other_id: int):
+    async with db.acquire() as conn:
+        parent1_row = await conn.fetchrow("""
+            SELECT parent_id FROM parents WHERE child_id = $1
+        """, user_id)
+        parent2_row = await conn.fetchrow("""
+            SELECT parent_id FROM parents WHERE child_id = $1
+        """, other_id)
+        
+        if parent1_row and parent2_row:
+            return parent1_row['parent_id'] == parent2_row['parent_id']
+    
+    return False
+
+
+async def check_relationship_conflicts(db, user_id: int, target_id: int):
+    if user_id == target_id:
+        return True, "Cannot form relationship with yourself"
+    
+    if await is_parent_child(db, user_id, target_id):
+        return True, "Cannot marry someone who is your parent or child"
+    
+    if await is_sibling(db, user_id, target_id):
+        return True, "Cannot marry your sibling"
+    
+    return False, ""
+
+
+async def check_parent_conflicts(db, child_id: int, father_id: int = None, mother_id: int = None):
+    parent_id = father_id if father_id else mother_id
+    
+    if child_id == parent_id:
+        return True, "Cannot be your own parent"
+    
+    async with db.acquire() as conn:
+        existing_parent = await conn.fetchrow("""
+            SELECT parent_id FROM parents WHERE child_id = $1
+        """, child_id)
+        if existing_parent:
+            return True, "Already has a parent"
+    
+    return False, ""
+
+
+async def get_all_family_members(db, user_id: int):
+    async with db.acquire() as conn:
+        family_data = []
+        
+        partners = await get_user_partners(db, user_id)
+        children = await get_user_children(db, user_id)
+        
+        parent_row = await conn.fetchrow("""
+            SELECT parent_id FROM parents WHERE child_id = $1
+        """, user_id)
+        parent_id = parent_row['parent_id'] if parent_row else None
+        
+        family_data.append({
+            'id': user_id,
+            'father_id': parent_id,
+            'mother_id': None,
+            'partners': partners,
+            'generation': 0
+        })
+        
+        if parent_id:
+            parent_partners = await get_user_partners(db, parent_id)
+            parent_children = await get_user_children(db, parent_id)
+            family_data.append({
+                'id': parent_id,
+                'father_id': None,
+                'mother_id': None,
+                'partners': parent_partners,
+                'generation': -1
+            })
+        
+        for child_id in children:
+            child_partners = await get_user_partners(db, child_id)
+            child_children = await get_user_children(db, child_id)
+            family_data.append({
+                'id': child_id,
+                'father_id': user_id,
+                'mother_id': None,
+                'partners': child_partners,
+                'generation': 1
+            })
+        
+        family_data.sort(key=lambda x: (x['generation'], x['id']))
+        return family_data

@@ -9,7 +9,7 @@ class TradeQuestScheduler(commands.Cog):
         self.scheduler = AsyncIOScheduler()
         self.scheduler.add_job(
             self.generate_trade_quests,
-            IntervalTrigger(hours=2),
+            IntervalTrigger(hours=24),
             name="Trade Quest Generation"
         )
         self.scheduler.start()
@@ -55,12 +55,12 @@ class TradeQuestScheduler(commands.Cog):
             base_value = await self.get_item_base_value(conn, item['id'])
             payout = int(base_value * amount * (0.6 + trust_level * 0.04))
 
-            timeout_minutes = 10*60 + (trust_level - 1) * 2
+            timeout_hours = 24
 
             await conn.execute("""
                 INSERT INTO trade_quests (trust_level, item_id, item_amount, payout, expires_at)
-                VALUES ($1, $2, $3, $4, NOW() + INTERVAL '${5} minutes')
-            """, trust_level, item['id'], amount, payout, timeout_minutes)
+                VALUES ($1, $2, $3, $4, NOW() + INTERVAL '${5} hours')
+            """, trust_level, item['id'], amount, payout, timeout_hours)
 
             return True
         except Exception:

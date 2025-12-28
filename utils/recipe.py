@@ -1,4 +1,4 @@
-from singleton import ITEM_ID
+from utils.singleton import ITEM_ID
 
 class Recipe:
     def __init__(self, cost_items=None, require_items=None, energy_cost = None, mood_cost = None, results=None):
@@ -43,8 +43,3 @@ rice_cooked_recipe1 = Recipe(
         ITEM_ID.COOKED_RICE : 1
     }
 )
-
-
-
-
-

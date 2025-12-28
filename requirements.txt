@@ -24,7 +24,6 @@ langdetect
 optimum 
 llama-cpp-python
 rapidfuzz
-matplotlib
 topggpy
 pycountry
 rapidfuzz

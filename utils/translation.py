@@ -29,7 +29,11 @@ def init_translation(bot):
 
 def _get_translator(locale):
     if locale not in _translator_cache:
-        _translator_cache[locale] = GoogleTranslator(target=locale)
+        # Skip creating translator for English since it's the source language
+        if locale == "en":
+            _translator_cache[locale] = None
+        else:
+            _translator_cache[locale] = GoogleTranslator(target=locale)
     return _translator_cache[locale]
 
 async def translate(text, user_or_ctx, guild_id=None):
@@ -46,7 +50,8 @@ async def translate(text, user_or_ctx, guild_id=None):
         else:
             user_id = user_or_ctx
         
-        locale = await getUserLocale(user_id, guild_id)
+        #locale = await getUserLocale(user_id, guild_id)
+        locale = "en" # temp FIX ======================
         if locale == "en":
             return text
         
@@ -54,6 +59,8 @@ async def translate(text, user_or_ctx, guild_id=None):
             return TRANSLATION_OVERRIDES[locale][text]
         
         translator = _get_translator(locale)
+        if translator is None:
+            return text
         return translator.translate(text)
     except Exception as e:
         logging.error(f"Translation error: {e}")
@@ -111,4 +118,3 @@ async def getUserLocale(user_id, guild_id=None):
         except Exception as e:
             logging.error(f"Locale fetch error: {e}")
             return "en"
-            

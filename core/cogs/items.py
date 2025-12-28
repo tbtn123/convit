@@ -266,6 +266,7 @@ class Items(commands.Cog):
                 used_effects = []
 
                 for r in rows:
+                    
                     effect_name = r["effect_name"]
                     value = r["value"]
                     effect_type = r["effect_type"]
@@ -359,12 +360,28 @@ class Items(commands.Cog):
 
                 if len(used_effects) > 20:
                     used_effects = ["Multiple items used."]
+                
+                # Handle image URLs from item effects
+                image_urls = []
+                for r in rows:
+                    effect_name = r["effect_name"]
+                    value = r["value"]
+                    if effect_name == "image_url" and value:
+                        image_urls.append(value)
+                
                 embed = discord.Embed(
-                    title=f"{interaction.user.display_name} used: {item_name} x {parsed_amount}",
+                    title=f" {interaction.user.display_name} used: {item_name} x {parsed_amount}",
                     description="\n".join(used_effects) or "*But nothing happened...*",
-                    color=discord.Color.green()
+                    color=discord.Color.brand_green()
                 )
                 embed.set_author(name=interaction.user.name, icon_url=interaction.user.display_avatar.url)
+                
+                # Set first image as embed image, others as thumbnails
+                if image_urls:
+                    embed.set_image(url=image_urls[0])
+                    if len(image_urls) > 1:
+                        embed.set_thumbnail(url=image_urls[1])
+                
                 await interaction.followup.send(embed=embed)
                 
                 

@@ -13,6 +13,7 @@ import aiohttp
 import pycountry
 from rapidfuzz import process, fuzz
 from utils.translation import translate as tr, translate_bulk
+from utils.db_helpers import ensure_user
 temp_store = {}
 
 load_dotenv()
@@ -474,6 +475,8 @@ class Ping(commands.Cog):
         except Exception as e:
             msg = await tr(f"Failed to fetch weather alerts: `{e}`", ctx)
             await ctx.reply(msg, ephemeral=True)
+
+
 
 
 async def setup(bot):

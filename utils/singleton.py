@@ -50,6 +50,8 @@ class ItemID:
     WOODEN_PICKAXE = 31
     STONE_PICKAXE = 32
     WHEAT_SEED = 33
+    CAKE = 34
+    SWORD = 35
 
 
 # Legacy support - will be removed in future versions

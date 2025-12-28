@@ -367,3 +367,22 @@ CREATE TABLE public.todo ( id serial4 NOT NULL, user_id int8 NOT NULL, title tex
 -- DROP TABLE public.trade_quests;
 
 CREATE TABLE public.trade_quests ( id serial4 NOT NULL, trust_level int4 NULL, item_id int4 NULL, item_amount int4 NOT NULL, payout int8 NOT NULL, expires_at timestamp NOT NULL, created_at timestamp DEFAULT now() NULL, CONSTRAINT trade_quests_pkey PRIMARY KEY (id), CONSTRAINT trade_quests_trust_level_check CHECK (((trust_level >= 1) AND (trust_level <= 9))), CONSTRAINT trade_quests_item_id_fkey FOREIGN KEY (item_id) REFERENCES public.items(id));
+
+
+
+
+CREATE TABLE IF NOT EXISTS marriages(
+    user_id BIGINT NOT NULL,
+    partner_id BIGINT NOT NULL,
+    guild_id BIGINT NOT NULL DEFAULT 0,
+    timestamp TIMESTAMP,
+    PRIMARY KEY (user_id, partner_id, guild_id)
+);
+
+CREATE TABLE IF NOT EXISTS parents(
+    child_id BIGINT NOT NULL,
+    parent_id BIGINT NOT NULL,
+    guild_id BIGINT NOT NULL DEFAULT 0,
+    timestamp TIMESTAMP,
+    PRIMARY KEY (child_id, guild_id)
+);
