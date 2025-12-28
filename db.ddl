@@ -371,11 +371,12 @@ CREATE TABLE public.trade_quests ( id serial4 NOT NULL, trust_level int4 NULL, i
 
 
 
+
 CREATE TABLE IF NOT EXISTS marriages(
     user_id BIGINT NOT NULL,
     partner_id BIGINT NOT NULL,
     guild_id BIGINT NOT NULL DEFAULT 0,
-    timestamp TIMESTAMP,
+    created_at timestamptz DEFAULT now(),
     PRIMARY KEY (user_id, partner_id, guild_id)
 );
 
@@ -383,6 +384,6 @@ CREATE TABLE IF NOT EXISTS parents(
     child_id BIGINT NOT NULL,
     parent_id BIGINT NOT NULL,
     guild_id BIGINT NOT NULL DEFAULT 0,
-    timestamp TIMESTAMP,
+    created_at timestamptz DEFAULT now(),
     PRIMARY KEY (child_id, guild_id)
 );

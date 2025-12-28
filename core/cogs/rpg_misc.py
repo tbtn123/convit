@@ -4,7 +4,7 @@ import discord
 from discord.ext import commands
 from typing import Literal
 import aiohttp, traceback
-from utils.db_helpers import ensure_user
+from utils.db_helpers import ensure_user, get_user_partners, get_user_children, get_relationship_data, ensure_relationship
 from dotenv import load_dotenv
 from utils.singleton import EffectID
 from utils.translation import translate as tr, translate_bulk
@@ -23,6 +23,29 @@ load_dotenv()
 class RPG_MISC(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+
+    async def check_family_relationship(self, user_id: int, target_id: int):
+        """Check if two users are family members and return relationship type"""
+        await ensure_relationship(self.bot.db, user_id)
+        await ensure_relationship(self.bot.db, target_id)
+        
+        user_partners = await get_user_partners(self.bot.db, user_id)
+        user_children = await get_user_children(self.bot.db, user_id)
+        user_data = await get_relationship_data(self.bot.db, user_id)
+        
+        if target_id in user_partners:
+            return True, "partner"
+        elif target_id in user_children:
+            return True, "child"
+        elif user_data and user_data['father_id'] == target_id:
+            return True, "parent"
+        else:
+            # Check if target considers user as family
+            target_children = await get_user_children(self.bot.db, target_id)
+            if user_id in target_children:
+                return True, "parent"
+        
+        return False, ""
 
     async def add_mood(self, conn, user_id: int, amount: int):
         row = await conn.fetchrow("SELECT mood, mood_max FROM users WHERE id = $1", user_id)
@@ -65,9 +88,19 @@ class RPG_MISC(commands.Cog):
         await ensure_user(self.bot.db, ctx.author.id)
         await ensure_user(self.bot.db, target.id)
 
+        is_family, relationship_type = await self.check_family_relationship(ctx.author.id, target.id)
+        
         async with self.bot.db.acquire() as conn:
-            await self.add_mood(conn, ctx.author.id, 5)
-            await self.add_mood(conn, target.id, 5)
+            if is_family:
+                await self.add_mood(conn, ctx.author.id, 8)
+                await self.add_mood(conn, target.id, 8)
+                mood_text = "+8 (both users) - Family bonus!"
+                gif_query = "family hug warm"
+            else:
+                await self.add_mood(conn, ctx.author.id, 5)
+                await self.add_mood(conn, target.id, 5)
+                mood_text = "+5 (both users)"
+                gif_query = "hug"
             
             if random.random() < 0.20:
                 await conn.execute("""
@@ -77,7 +110,7 @@ class RPG_MISC(commands.Cog):
                     SET duration = 120, ticks = 120, applied_at = NOW()
                 """, ctx.author.id)
 
-        gif_url = await self.fetch_gif("hug")
+        gif_url = await self.fetch_gif(gif_query)
         translations = await translate_bulk([
             "Social Interaction Complete",
             "Action",
@@ -93,7 +126,7 @@ class RPG_MISC(commands.Cog):
             description=f"{translations[1]}: Hug\n{translations[2]}: {ctx.author.mention}\n{translations[3]}: {target.mention}",
             color=discord.Color.blue()
         )
-        embed.add_field(name=translations[4], value="+5 (both users)", inline=True)
+        embed.add_field(name=translations[4], value=mood_text, inline=True)
         embed.add_field(name=translations[5], value=translations[6], inline=True)
         if gif_url:
             embed.set_image(url=gif_url)
@@ -113,9 +146,24 @@ class RPG_MISC(commands.Cog):
         await ensure_user(self.bot.db, ctx.author.id)
         await ensure_user(self.bot.db, target.id)
 
+        is_family, relationship_type = await self.check_family_relationship(ctx.author.id, target.id)
+        
         async with self.bot.db.acquire() as conn:
-            await self.add_mood(conn, ctx.author.id, 5)
-            await self.add_mood(conn, target.id, 5)
+            if is_family and relationship_type == "partner":
+                await self.add_mood(conn, ctx.author.id, 10)
+                await self.add_mood(conn, target.id, 10)
+                mood_text = "+10 (both users) - Partner bonus!"
+                gif_query = "romantic kiss couple"
+            elif is_family:
+                await self.add_mood(conn, ctx.author.id, 6)
+                await self.add_mood(conn, target.id, 6)
+                mood_text = "+6 (both users) - Family bonus!"
+                gif_query = "family kiss cheek"
+            else:
+                await self.add_mood(conn, ctx.author.id, 5)
+                await self.add_mood(conn, target.id, 5)
+                mood_text = "+5 (both users)"
+                gif_query = "anime kiss"
             
             if random.random() < 0.20:
                 await conn.execute("""
@@ -125,7 +173,7 @@ class RPG_MISC(commands.Cog):
                     SET duration = 120, ticks = 120, applied_at = NOW()
                 """, ctx.author.id)
 
-        gif_url = await self.fetch_gif("anime kiss")
+        gif_url = await self.fetch_gif(gif_query)
         translations = await translate_bulk([
             "Social Interaction Complete",
             "Action",
@@ -141,7 +189,7 @@ class RPG_MISC(commands.Cog):
             description=f"{translations[1]}: Kiss\n{translations[2]}: {ctx.author.mention}\n{translations[3]}: {target.mention}",
             color=discord.Color.blue()
         )
-        embed.add_field(name=translations[4], value="+5 (both users)", inline=True)
+        embed.add_field(name=translations[4], value=mood_text, inline=True)
         embed.add_field(name=translations[5], value=translations[6], inline=True)
         if gif_url:
             embed.set_image(url=gif_url)
@@ -209,9 +257,20 @@ class RPG_MISC(commands.Cog):
         await ensure_user(self.bot.db, ctx.author.id)
         await ensure_user(self.bot.db, target.id)
 
+        
+        is_family, relationship_type = await self.check_family_relationship(ctx.author.id, target.id)
+        
         async with self.bot.db.acquire() as conn:
-            await self.add_mood(conn, ctx.author.id, 5)
-            await self.add_mood(conn, target.id, 5)
+            if is_family:
+                await self.add_mood(conn, ctx.author.id, 7)
+                await self.add_mood(conn, target.id, 7)
+                mood_text = "+7 (both users) - Family bonus!"
+                gif_query = "family head pat caring"
+            else:
+                await self.add_mood(conn, ctx.author.id, 5)
+                await self.add_mood(conn, target.id, 5)
+                mood_text = "+5 (both users)"
+                gif_query = "head pat"
             
             if random.random() < 0.20:
                 await conn.execute("""
@@ -221,7 +280,7 @@ class RPG_MISC(commands.Cog):
                     SET duration = 120, ticks = 120, applied_at = NOW()
                 """, ctx.author.id)
 
-        gif_url = await self.fetch_gif("head pat")
+        gif_url = await self.fetch_gif(gif_query)
         translations = await translate_bulk([
             "Social Interaction Complete",
             "Action",
@@ -237,7 +296,7 @@ class RPG_MISC(commands.Cog):
             description=f"{translations[1]}: Pat\n{translations[2]}: {ctx.author.mention}\n{translations[3]}: {target.mention}",
             color=discord.Color.blue()
         )
-        embed.add_field(name=translations[4], value="+5 (both users)", inline=True)
+        embed.add_field(name=translations[4], value=mood_text, inline=True)
         embed.add_field(name=translations[5], value=translations[6], inline=True)
         if gif_url:
             embed.set_image(url=gif_url)

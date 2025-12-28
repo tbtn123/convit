@@ -13,6 +13,7 @@ from typing import Optional
 
 from utils.db_helpers import *
 from utils.translation import translate as tr
+from utils.datetime_helpers import utc_now, ensure_utc, format_discord_timestamp
 
 
 logger = logging.getLogger(__name__)
@@ -289,6 +290,7 @@ class Relationship(commands.Cog):
         self.bot = bot
 
     @commands.hybrid_command(name="marry", description="Propose marriage to another user")
+    @commands.cooldown(1, 30, commands.BucketType.user)
     async def marry(self, ctx: commands.Context, target: discord.Member):
         await ctx.defer()
 
@@ -345,8 +347,8 @@ class Relationship(commands.Cog):
                     await tr(conflict_msg, interaction), ephemeral=True
                 )
 
-            marriage_date = datetime.now(timezone.utc)
-            await add_partner(self.bot.db, proposer_id, target_id, marriage_date)
+            marriage_date = utc_now()
+            await add_partner(self.bot.db, proposer_id, target_id)
 
             embed = discord.Embed(
                 title=":tada: Marriage Complete! :tada:",
@@ -372,7 +374,7 @@ class Relationship(commands.Cog):
 
             embed.add_field(
                 name=":calendar: Married On",
-                value=f"<t:{int(datetime.now().timestamp())}:F>",
+                value=format_discord_timestamp(utc_now()),
                 inline=False
             )
 
@@ -421,6 +423,7 @@ class Relationship(commands.Cog):
                 pass
 
     @commands.hybrid_command(name="adopt", description="Propose to adopt a user as your child")
+    @commands.cooldown(1, 30, commands.BucketType.user)
     async def adopt(self, ctx: commands.Context, target: discord.Member):
         await ctx.defer()
 
@@ -501,7 +504,7 @@ class Relationship(commands.Cog):
 
             embed.add_field(
                 name=":calendar: Adopted On",
-                value=f"<t:{int(datetime.now().timestamp())}:F>",
+                value=format_discord_timestamp(utc_now()),
                 inline=False
             )
 
@@ -550,6 +553,7 @@ class Relationship(commands.Cog):
                 pass
 
     @commands.hybrid_command(name="divorce", description="Select a partner to divorce from")
+    @commands.cooldown(1, 30, commands.BucketType.user)
     async def divorce(self, ctx: commands.Context):
         await ctx.defer()
 
@@ -622,7 +626,7 @@ class Relationship(commands.Cog):
 
             embed.add_field(
                 name="Divorced On",
-                value=f"<t:{int(datetime.now().timestamp())}:F>",
+                value=format_discord_timestamp(utc_now()),
                 inline=False
             )
 
@@ -635,6 +639,7 @@ class Relationship(commands.Cog):
             )
 
     @commands.hybrid_command(name="disown", description="Select a child to disown")
+    @commands.cooldown(1, 30, commands.BucketType.user)
     async def disown(self, ctx: commands.Context):
         await ctx.defer()
 
@@ -679,6 +684,7 @@ class Relationship(commands.Cog):
             await ctx.reply(embed=embed, view=view)
 
     @commands.hybrid_command(name="leave-parents", description="Leave your parents (remove yourself as their child)")
+    @commands.cooldown(1, 30, commands.BucketType.user)
     async def leave_parents(self, ctx: commands.Context):
         await ctx.defer()
 
@@ -746,7 +752,7 @@ class Relationship(commands.Cog):
 
             embed.add_field(
                 name="Disowned On",
-                value=f"<t:{int(datetime.now().timestamp())}:F>",
+                value=format_discord_timestamp(utc_now()),
                 inline=False
             )
 
@@ -786,7 +792,7 @@ class Relationship(commands.Cog):
 
             embed.add_field(
                 name="Left On",
-                value=f"<t:{int(datetime.now().timestamp())}:F>",
+                value=format_discord_timestamp(utc_now()),
                 inline=False
             )
 
@@ -831,17 +837,7 @@ class Relationship(commands.Cog):
                         partner_user = await self.bot.fetch_user(partner_id)
                         partner_name = partner_user.name
                         marriage_date_obj = await get_marriage_date(self.bot.db, target.id, partner_id)
-                        if marriage_date_obj:
-                            if isinstance(marriage_date_obj, str):
-                                try:
-                                    dt = datetime.fromisoformat(marriage_date_obj.replace('Z', '+00:00'))
-                                except:
-                                    dt = datetime.now(timezone.utc)
-                            else:
-                                dt = marriage_date_obj
-                            marriage_date = f"<t:{int(dt.timestamp())}:D>"
-                        else:
-                            marriage_date = "Unknown"
+                        marriage_date = format_discord_timestamp(ensure_utc(marriage_date_obj), "D")
                         partner_info.append(f":ring: {partner_name} (since {marriage_date})")
                     except:
                         partner_info.append(f":ring: <@{partner_id}>")
@@ -905,8 +901,23 @@ class Relationship(commands.Cog):
             logger.error(f"Relationships command error: {e}")
             await ctx.reply(await tr("An error occurred retrieving relationship information.", ctx))
 
+    
 
-
+   
+    async def cog_command_error(self, ctx, error):
+        if isinstance(error, commands.CommandOnCooldown):
+            try:
+                msg = await tr(f"Please wait {round(error.retry_after, 1)} seconds before using this relationship command again.", ctx)
+                if ctx.interaction and ctx.interaction.response.is_done():
+                    await ctx.interaction.followup.send(msg, ephemeral=True)
+                else:
+                    await ctx.reply(msg, ephemeral=True)
+            except discord.errors.NotFound:
+                pass
+            except Exception as e:
+                logger.error(f"Failed to send cooldown message: {e}")
+            return
+        logger.error(f"Relationship command error: {type(error).__name__}: {error}")
 
 
 async def setup(bot):

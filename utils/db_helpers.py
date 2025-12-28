@@ -7,6 +7,7 @@ from discord.ext import commands
 import json
 
 from utils.economy import format_number
+from utils.datetime_helpers import utc_now, ensure_utc
 import os
 
 import aiohttp
@@ -101,7 +102,7 @@ async def check_has_user_upvoted(user_id):
 
 async def get_active_effects(db, user_id: int):
     async with db.acquire() as conn:
-        now = datetime.now(timezone.utc)
+        now = utc_now()
         rows = await conn.fetch("""
             SELECT effect_type, value, expires_at
             FROM effects
@@ -122,7 +123,7 @@ async def ensure_guild_cfg(pool, guild_id: int):
 
 
 async def log_spending(db, amount: int):
-    now = datetime.now(timezone.utc)
+    now = utc_now()
     day = now.date()
     hour = now.hour
     async with db.acquire() as conn:
@@ -174,11 +175,11 @@ async def get_relationship_data(db, user_id: int):
 async def get_user_partners(db, user_id: int):
     async with db.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT partner_id, timestamp
+            SELECT partner_id, created_at
             FROM marriages
             WHERE user_id = $1
             UNION
-            SELECT user_id as partner_id, timestamp
+            SELECT user_id as partner_id, created_at
             FROM marriages
             WHERE partner_id = $1
         """, user_id)
@@ -188,10 +189,10 @@ async def get_user_partners(db, user_id: int):
 async def get_marriage_date(db, user1_id: int, user2_id: int):
     async with db.acquire() as conn:
         row = await conn.fetchrow("""
-            SELECT timestamp FROM marriages
+            SELECT created_at FROM marriages
             WHERE (user_id = $1 AND partner_id = $2) OR (user_id = $2 AND partner_id = $1)
         """, user1_id, user2_id)
-        return row['timestamp'] if row else None
+        return row['created_at'] if row else None
 
 
 async def get_user_children(db, user_id: int):
@@ -204,9 +205,6 @@ async def get_user_children(db, user_id: int):
 
 
 async def add_partner(db, user_id: int, partner_id: int, marriage_date=None):
-    if marriage_date is None:
-        marriage_date = datetime.now(timezone.utc)
-    
     async with db.acquire() as conn:
         existing = await conn.fetchrow("""
             SELECT 1 FROM marriages
@@ -215,10 +213,16 @@ async def add_partner(db, user_id: int, partner_id: int, marriage_date=None):
         if existing:
             return False
         
-        await conn.execute("""
-            INSERT INTO marriages (user_id, partner_id, timestamp)
-            VALUES ($1, $2, $3)
-        """, user_id, partner_id, marriage_date)
+        if marriage_date is None:
+            await conn.execute("""
+                INSERT INTO marriages (user_id, partner_id)
+                VALUES ($1, $2)
+            """, user_id, partner_id)
+        else:
+            await conn.execute("""
+                INSERT INTO marriages (user_id, partner_id, created_at)
+                VALUES ($1, $2, $3)
+            """, user_id, partner_id, marriage_date)
         return True
 
 
@@ -236,10 +240,10 @@ async def add_child(db, father_id: int, mother_id: int, child_id: int):
     if parent_id:
         async with db.acquire() as conn:
             await conn.execute("""
-                INSERT INTO parents (child_id, parent_id, timestamp)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (child_id, guild_id) DO UPDATE SET parent_id = $2, timestamp = $3
-            """, child_id, parent_id, datetime.now(timezone.utc))
+                INSERT INTO parents (child_id, parent_id)
+                VALUES ($1, $2)
+                ON CONFLICT (child_id, guild_id) DO UPDATE SET parent_id = $2
+            """, child_id, parent_id)
 
 
 async def remove_child_relationship(db, child_id: int):
