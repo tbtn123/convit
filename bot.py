@@ -5,7 +5,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 import asyncpg
 import uvicorn
-
+from utils.misc import get_system_info
 import logging
 
 logger = logging.getLogger(__name__)
@@ -206,4 +206,5 @@ async def main():
     await bot.start(token)
 
 if __name__ == "__main__":
+    get_system_info()
     asyncio.run(main())
