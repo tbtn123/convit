@@ -50,8 +50,8 @@ async def translate(text, user_or_ctx, guild_id=None):
         else:
             user_id = user_or_ctx
         
-        #locale = await getUserLocale(user_id, guild_id)
-        locale = "en" # temp FIX ======================
+        locale = await getUserLocale(user_id, guild_id)
+        
         if locale == "en":
             return text
         
@@ -100,6 +100,11 @@ async def translate_bulk(texts, user_or_ctx, guild_id=None):
         return texts
 
 async def getUserLocale(user_id, guild_id=None):
+
+    #TEMP FIx: disable localization for now
+    return "en"
+
+
     if not _bot_instance:
         return "en"
     

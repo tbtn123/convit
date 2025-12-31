@@ -29,5 +29,3 @@ pycountry
 rapidfuzz
 py-evalexpr
 groq
-graphviz
-graphviz-static
