@@ -19,6 +19,9 @@ class HelpView(discord.ui.View):
     def __init__(self, bot, cog_data, author):
         super().__init__(timeout=300)
         self.bot = bot
+    def __init__(self, bot, cog_data, author):
+        super().__init__(timeout=300)
+        self.bot = bot
         self.author = author
         self.cog_data = cog_data
         # Sorted list of category names

@@ -6,6 +6,8 @@ from dotenv import load_dotenv
 import asyncpg
 import uvicorn
 from utils.misc import get_system_info
+from datetime import datetime, timezone
+
 import logging
 
 logger = logging.getLogger(__name__)
@@ -30,6 +32,7 @@ async def get_prefix(bot, message):
     return prefix if prefix else "."
 
 bot = commands.Bot(command_prefix=get_prefix, intents=intents, help_command=None)
+bot.start_time = datetime.now(timezone.utc)
 
 work_cache = {}
 gambling_cache = {}
