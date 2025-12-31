@@ -5,6 +5,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 import asyncpg
 import uvicorn
+from datetime import datetime, timezone
 
 import logging
 
@@ -30,6 +31,7 @@ async def get_prefix(bot, message):
     return prefix if prefix else "."
 
 bot = commands.Bot(command_prefix=get_prefix, intents=intents, help_command=None)
+bot.start_time = datetime.now(timezone.utc)
 
 work_cache = {}
 gambling_cache = {}
