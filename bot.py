@@ -7,6 +7,7 @@ import asyncpg
 import uvicorn
 from datetime import datetime, timezone
 
+from utils.misc import get_system_info
 import logging
 
 logger = logging.getLogger(__name__)
@@ -208,4 +209,5 @@ async def main():
     await bot.start(token)
 
 if __name__ == "__main__":
+    get_system_info()
     asyncio.run(main())

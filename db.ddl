@@ -372,18 +372,140 @@ CREATE TABLE public.trade_quests ( id serial4 NOT NULL, trust_level int4 NULL, i
 
 
 
-CREATE TABLE IF NOT EXISTS marriages(
-    user_id BIGINT NOT NULL,
-    partner_id BIGINT NOT NULL,
-    guild_id BIGINT NOT NULL DEFAULT 0,
-    created_at timestamptz DEFAULT now(),
-    PRIMARY KEY (user_id, partner_id, guild_id)
+CREATE TABLE IF NOT EXISTS marriages (
+    spouse_a   BIGINT NOT NULL,
+    spouse_b   BIGINT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now(),
+
+    CONSTRAINT pk_marriages
+        PRIMARY KEY (spouse_a, spouse_b),
+
+    CONSTRAINT chk_marriage_order
+        CHECK (spouse_a < spouse_b)
 );
 
-CREATE TABLE IF NOT EXISTS parents(
-    child_id BIGINT NOT NULL,
-    parent_id BIGINT NOT NULL,
-    guild_id BIGINT NOT NULL DEFAULT 0,
-    created_at timestamptz DEFAULT now(),
-    PRIMARY KEY (child_id, guild_id)
+
+CREATE TABLE IF NOT EXISTS parents (
+    child_id   BIGINT NOT NULL,
+    parent_id  BIGINT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now(),
+
+    CONSTRAINT pk_parents
+        PRIMARY KEY (child_id, parent_id),
+
+    CONSTRAINT chk_no_self_parent
+        CHECK (child_id <> parent_id)
 );
+
+
+-- Updated sibling check and recursive ancestor/descendant check in fn_check_marriage
+CREATE OR REPLACE FUNCTION fn_check_marriage()
+RETURNS TRIGGER AS $$
+DECLARE
+    is_incest BOOLEAN;
+BEGIN
+    -- self marriage (defensive)
+    IF NEW.spouse_a = NEW.spouse_b THEN
+        RAISE EXCEPTION 'self_marriage_prohibited';
+    END IF;
+
+    -- already married (explicit, dù PK đã chặn)
+    IF EXISTS (
+        SELECT 1 FROM marriages
+        WHERE spouse_a = NEW.spouse_a
+          AND spouse_b = NEW.spouse_b
+    ) THEN
+        RAISE EXCEPTION 'already_married';
+    END IF;
+
+    -- Check if they are siblings (share at least one common parent)
+    IF EXISTS (
+        SELECT 1 FROM parents p1
+        JOIN parents p2 ON p1.parent_id = p2.parent_id
+        WHERE p1.child_id = NEW.spouse_a 
+          AND p2.child_id = NEW.spouse_b
+    ) THEN
+        RAISE EXCEPTION 'siblings_prohibited';
+    END IF;
+
+    -- Enhanced incest check: prevent marriage between any direct ancestor/descendant
+    WITH RECURSIVE all_ancestors_a(ancestor_id) AS (
+        SELECT parent_id FROM parents WHERE child_id = NEW.spouse_a
+        UNION
+        SELECT p.parent_id FROM parents p JOIN all_ancestors_a a ON p.child_id = a.ancestor_id
+    ),
+    all_ancestors_b(ancestor_id) AS (
+        SELECT parent_id FROM parents WHERE child_id = NEW.spouse_b
+        UNION
+        SELECT p.parent_id FROM parents p JOIN all_ancestors_b a ON p.child_id = a.ancestor_id
+    )
+    SELECT EXISTS (
+        SELECT 1 FROM all_ancestors_b WHERE ancestor_id = NEW.spouse_a
+        UNION
+        SELECT 1 FROM all_ancestors_a WHERE ancestor_id = NEW.spouse_b
+    ) INTO is_incest;
+
+    IF is_incest THEN
+        RAISE EXCEPTION 'incest_prohibited';
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_check_marriage ON marriages;
+
+CREATE TRIGGER trg_check_marriage
+BEFORE INSERT ON marriages
+FOR EACH ROW
+EXECUTE FUNCTION fn_check_marriage();
+
+-- Updated genealogical loop check in fn_check_parents
+CREATE OR REPLACE FUNCTION fn_check_parents()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- self parenting
+    IF NEW.child_id = NEW.parent_id THEN
+        RAISE EXCEPTION 'self_parenting_prohibited';
+    END IF;
+
+    -- parent cannot be spouse
+    IF EXISTS (
+        SELECT 1 FROM marriages
+        WHERE spouse_a = LEAST(NEW.child_id, NEW.parent_id)
+          AND spouse_b = GREATEST(NEW.child_id, NEW.parent_id)
+    ) THEN
+        RAISE EXCEPTION 'spouse_parenting_prohibited';
+    END IF;
+
+    -- Enhanced genealogical loop check: ensure parent is not a descendant of child
+    IF EXISTS (
+        WITH RECURSIVE descendants(id) AS (
+            SELECT child_id FROM parents WHERE parent_id = NEW.child_id
+            UNION
+            SELECT p.child_id FROM parents p JOIN descendants d ON p.parent_id = d.id
+        )
+        SELECT 1 FROM descendants WHERE id = NEW.parent_id
+    ) THEN
+        RAISE EXCEPTION 'genealogical_paradox';
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_check_parents ON parents;
+
+CREATE TRIGGER trg_check_parents
+BEFORE INSERT OR UPDATE ON parents
+FOR EACH ROW
+EXECUTE FUNCTION fn_check_parents();
+
+
+-- Lookup parent -> children
+CREATE INDEX IF NOT EXISTS idx_parents_parent
+    ON parents(parent_id);
+
+-- Fast marriage lookup
+CREATE INDEX IF NOT EXISTS idx_marriages_lookup
+    ON marriages(spouse_a, spouse_b);

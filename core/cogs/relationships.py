@@ -10,16 +10,14 @@ import io
 import logging
 from datetime import datetime, timezone
 from typing import Optional
-
+import graphviz
+import graphviz_static
 from utils.db_helpers import *
 from utils.translation import translate as tr
 from utils.datetime_helpers import utc_now, ensure_utc, format_discord_timestamp
 
 
 logger = logging.getLogger(__name__)
-
-CHILDREN_MAX = 5
-PARTNERS_MAX = 2
 
 
 class MarriageProposalView(discord.ui.View):
@@ -37,6 +35,10 @@ class MarriageProposalView(discord.ui.View):
                 await tr("This proposal isn't for you!", interaction), ephemeral=True
             )
 
+        logger.info(
+            "Marriage accepted",
+            extra={"proposer": self.proposer_id, "target": self.target_id}
+        )
         self.accepted = True
         await interaction.response.defer()
         await self.cog._handle_marriage_accept(interaction, self.proposer_id, self.target_id)
@@ -49,10 +51,18 @@ class MarriageProposalView(discord.ui.View):
                 await tr("This proposal isn't for you!", interaction), ephemeral=True
             )
 
+        logger.info(
+            "Marriage declined",
+            extra={"proposer": self.proposer_id, "target": self.target_id}
+        )
+
         await interaction.response.edit_message(
             embed=discord.Embed(
                 title=await tr("Proposal Declined", interaction),
-                description=await tr("The marriage proposal has been declined.", interaction),
+                description=await tr(
+                    "The marriage proposal has been declined.",
+                    interaction
+                ),
                 color=discord.Color.red()
             ),
             view=None
@@ -176,6 +186,7 @@ class AdoptionProposalView(discord.ui.View):
                 await tr("This adoption proposal isn't for you!", interaction), ephemeral=True
             )
 
+        logger.info(f"User {self.target_id} accepted adoption proposal from {self.adopter_id}")
         self.accepted = True
         await interaction.response.defer()
         await self.cog._handle_adoption_accept(interaction, self.adopter_id, self.target_id)
@@ -188,6 +199,7 @@ class AdoptionProposalView(discord.ui.View):
                 await tr("This adoption proposal isn't for you!", interaction), ephemeral=True
             )
 
+        logger.info(f"User {self.target_id} rejected adoption proposal from {self.adopter_id}")
         await interaction.response.edit_message(
             embed=discord.Embed(
                 title=await tr("Adoption Rejected", interaction),
@@ -200,26 +212,33 @@ class AdoptionProposalView(discord.ui.View):
 
 
 class PartnerSelectView(discord.ui.View):
-    def __init__(self, user_id: int, partners: list, cog):
+    def __init__(self, user_id: int, partners: list, cog, bot):
         super().__init__(timeout=60)
         self.user_id = user_id
         self.partners = partners
         self.cog = cog
+        self.bot = bot
 
+    async def create_options(self):
         options = []
-        for partner_id in partners:
+        for i, partner_id in enumerate(self.partners):
             try:
-                partner_name = f"User {partner_id}"
+                partner = await self.bot.fetch_user(partner_id)
+                partner_name = partner.name[:20]
                 options.append(discord.SelectOption(
-                    label=f"Partner {len(options) + 1}",
+                    label=f"{partner_name}",
                     value=str(partner_id),
-                    description=f"Select to divorce this partner"
+                    description=f"Married - Click to divorce"
                 ))
             except:
-                continue
+                options.append(discord.SelectOption(
+                    label=f"User {partner_id}",
+                    value=str(partner_id),
+                    description=f"Click to divorce"
+                ))
 
         if options:
-            select = PartnerSelect(options[:25])  # Discord limit of 25 options
+            select = PartnerSelect(options[:25])
             self.add_item(select)
 
 
@@ -243,23 +262,30 @@ class PartnerSelect(discord.ui.Select):
 
 
 class ChildSelectView(discord.ui.View):
-    def __init__(self, user_id: int, children: list, cog):
+    def __init__(self, user_id: int, children: list, cog, bot):
         super().__init__(timeout=60)
         self.user_id = user_id
-        self.children = children
+        self.child_ids = children
         self.cog = cog
+        self.bot = bot
 
+    async def create_options(self):
         options = []
-        for child_id in children:
+        for i, child_id in enumerate(self.child_ids):
             try:
-                child_name = f"Child {len(options) + 1}"
+                child = await self.bot.fetch_user(child_id)
+                child_name = child.name[:20]  # Truncate long names
                 options.append(discord.SelectOption(
-                    label=f"Child {len(options) + 1}",
+                    label=f"{child_name}",
                     value=str(child_id),
-                    description=f"Select to disown this child"
+                    description=f"Child - Click to disown"
                 ))
             except:
-                continue
+                options.append(discord.SelectOption(
+                    label=f"Child {i + 1}",
+                    value=str(child_id),
+                    description=f"Click to disown"
+                ))
 
         if options:
             select = ChildSelect(options[:25])  # Discord limit of 25 options
@@ -289,35 +315,71 @@ class Relationship(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    def _get_user_friendly_error(self, error_msg: str) -> str:
+        """Convert database error messages to user-friendly messages"""
+        error_mappings = {
+            'self_marriage_prohibited': "You cannot marry yourself!",
+            'already_married': "You are already married to this person!",
+            'siblings_prohibited': "You cannot marry your sibling!",
+            'incest_prohibited': "You cannot marry a family member!",
+            'too_closely_related': "You are too closely related to marry!",
+            'self_parenting_prohibited': "You cannot adopt yourself!",
+            'spouse_parenting_prohibited': "You cannot adopt your spouse!",
+            'genealogical_paradox': "This adoption would create a family tree paradox!",
+            'cannot_adopt_spouse': "You cannot adopt your spouse!",
+            'would_create_genealogical_loop': "This adoption would create a family tree loop!"
+        }
+        
+        # Extract the actual error from PostgreSQL exception format
+        if ':' in error_msg:
+            error_key = error_msg.split(':')[-1].strip()
+        else:
+            error_key = error_msg.strip()
+            
+        return error_mappings.get(error_key, f"Database error: {error_key}")
+
     @commands.hybrid_command(name="marry", description="Propose marriage to another user")
     @commands.cooldown(1, 30, commands.BucketType.user)
     async def marry(self, ctx: commands.Context, target: discord.Member):
         await ctx.defer()
 
+        logger.info(f"User {ctx.author.id} ({ctx.author.name}) attempting to marry user {target.id} ({target.name}) in guild {ctx.guild.id}")
+
         if target.bot or target.id == ctx.author.id:
+            logger.warning(f"Invalid marriage target: bot={target.bot}, self={target.id == ctx.author.id}")
             return await ctx.reply(await tr("You cannot marry that user!", ctx))
 
-        await ensure_relationship(self.bot.db, ctx.author.id)
-        await ensure_relationship(self.bot.db, target.id)
+        await ensure_user(self.bot.db, ctx.author.id)
+        await ensure_user(self.bot.db, target.id)
 
         proposer_partners = await get_user_partners(self.bot.db, ctx.author.id)
         target_partners = await get_user_partners(self.bot.db, target.id)
 
         if len(proposer_partners) >= PARTNERS_MAX:
+            logger.warning(f"User {ctx.author.id} has too many partners ({len(proposer_partners)}/{PARTNERS_MAX})")
             return await ctx.reply(await tr(f"You can only have {PARTNERS_MAX} partners maximum!", ctx))
 
         if len(target_partners) >= PARTNERS_MAX:
+            logger.warning(f"Target {target.id} has too many partners ({len(target_partners)}/{PARTNERS_MAX})")
             return await ctx.reply(await tr(f"Your target can only have {PARTNERS_MAX} partners maximum!", ctx))
 
         if target.id in proposer_partners:
+            logger.warning(f"Users {ctx.author.id} and {target.id} are already married")
             return await ctx.reply(await tr("You are already married to this person!", ctx))
 
-        conflict, conflict_msg = await check_relationship_conflicts(self.bot.db, ctx.author.id, target.id)
-        if conflict:
-            return await ctx.reply(await tr(conflict_msg, ctx))
+        # Pre-check for relationship conflicts
+        try:
+            conflict, conflict_msg = await check_relationship_conflicts(self.bot.db, ctx.author.id, target.id)
+            if conflict:
+                user_friendly_msg = self._get_user_friendly_error(conflict_msg)
+                return await ctx.reply(await tr(user_friendly_msg, ctx))
+        except Exception as e:
+            logger.error(f"Error checking relationship conflicts: {e}")
+            return await ctx.reply(await tr("An error occurred while checking relationship compatibility.", ctx))
 
+        logger.info(f"Marriage proposal sent from {ctx.author.id} to {target.id}")
         embed = discord.Embed(
-            title="<Marriage Proposal",
+            title="💍 Marriage Proposal",
             description=f"{ctx.author.mention} has proposed marriage to {target.mention}!",
             color=discord.Color.pink()
         )
@@ -341,14 +403,18 @@ class Relationship(commands.Cog):
                     await tr("You are already married to this person!", interaction), ephemeral=True
                 )
 
-            conflict, conflict_msg = await check_relationship_conflicts(self.bot.db, proposer_id, target_id)
-            if conflict:
+            try:
+                await add_partner(self.bot.db, proposer_id, target_id)
+            except asyncpg.PostgresError as e:
+                error_msg = self._get_user_friendly_error(str(e))
                 return await interaction.followup.send(
-                    await tr(conflict_msg, interaction), ephemeral=True
+                    await tr(f"Cannot complete marriage: {error_msg}", interaction), ephemeral=True
                 )
-
-            marriage_date = utc_now()
-            await add_partner(self.bot.db, proposer_id, target_id)
+            except Exception as e:
+                logger.error(f"Unexpected error during marriage: {e}")
+                return await interaction.followup.send(
+                    await tr("An unexpected error occurred during marriage processing.", interaction), ephemeral=True
+                )
 
             embed = discord.Embed(
                 title=":tada: Marriage Complete! :tada:",
@@ -427,28 +493,36 @@ class Relationship(commands.Cog):
     async def adopt(self, ctx: commands.Context, target: discord.Member):
         await ctx.defer()
 
+        logger.info(f"User {ctx.author.id} ({ctx.author.name}) attempting to adopt user {target.id} ({target.name}) in guild {ctx.guild.id}")
+
         if target.bot or target.id == ctx.author.id:
+            logger.warning(f"Invalid adoption target: bot={target.bot}, self={target.id == ctx.author.id}")
             return await ctx.reply(await tr("You cannot adopt that user!", ctx))
 
-        await ensure_relationship(self.bot.db, ctx.author.id)
-        await ensure_relationship(self.bot.db, target.id)
+        await ensure_user(self.bot.db, ctx.author.id)
+        await ensure_user(self.bot.db, target.id)
 
-        target_data = await get_relationship_data(self.bot.db, target.id)
-        if target_data and target_data['father_id']:
-            return await ctx.reply(await tr("This user already has a parent!", ctx))
+        # Check if child already has maximum parents (2)
+        target_parents = await get_parents(self.bot.db, target.id)
+        if len(target_parents) >= 2:  # Allow up to 2 parents
+            return await ctx.reply(await tr("This user already has the maximum number of parents (2)!", ctx))
 
         children = await get_user_children(self.bot.db, ctx.author.id)
         if len(children) >= CHILDREN_MAX:
+            logger.warning(f"User {ctx.author.id} has too many children ({len(children)}/{CHILDREN_MAX})")
             return await ctx.reply(await tr(f"You can only have {CHILDREN_MAX} children maximum!", ctx))
 
-        conflict, conflict_msg = await check_relationship_conflicts(self.bot.db, ctx.author.id, target.id)
-        if conflict:
-            return await ctx.reply(await tr(conflict_msg, ctx))
+        # Pre-check for adoption conflicts
+        try:
+            conflict, conflict_msg = await check_parent_conflicts(self.bot.db, target.id, ctx.author.id)
+            if conflict:
+                user_friendly_msg = self._get_user_friendly_error(conflict_msg)
+                return await ctx.reply(await tr(user_friendly_msg, ctx))
+        except Exception as e:
+            logger.error(f"Error checking parent conflicts: {e}")
+            return await ctx.reply(await tr("An error occurred while checking adoption compatibility.", ctx))
 
-        conflict, conflict_msg = await check_parent_conflicts(self.bot.db, target.id, ctx.author.id)
-        if conflict:
-            return await ctx.reply(await tr(conflict_msg, ctx))
-
+        logger.info(f"Adoption proposal sent from {ctx.author.id} to {target.id}")
         embed = discord.Embed(
             title=":family: Adoption Proposal",
             description=f"{ctx.author.mention} wants to adopt {target.mention} as their child!",
@@ -461,31 +535,33 @@ class Relationship(commands.Cog):
 
     async def _handle_adoption_accept(self, interaction: discord.Interaction, adopter_id: int, target_id: int):
         try:
-            target_data = await get_relationship_data(self.bot.db, target_id)
-            if target_data and target_data['father_id']:
-                return await interaction.followup.send(
-                    await tr("This user already has a parent!", interaction), ephemeral=True
-                )
-
             children = await get_user_children(self.bot.db, adopter_id)
             if len(children) >= CHILDREN_MAX:
                 return await interaction.followup.send(
                     await tr(f"Adopter can only have {CHILDREN_MAX} children maximum!", interaction), ephemeral=True
                 )
 
-            conflict, conflict_msg = await check_relationship_conflicts(self.bot.db, adopter_id, target_id)
-            if conflict:
+            # Check if child already has maximum parents
+            target_parents = await get_parents(self.bot.db, target_id)
+            if len(target_parents) >= 2:
                 return await interaction.followup.send(
-                    await tr(conflict_msg, interaction), ephemeral=True
+                    await tr("This user already has the maximum number of parents (2)!", interaction), ephemeral=True
                 )
 
-            conflict, conflict_msg = await check_parent_conflicts(self.bot.db, target_id, adopter_id)
-            if conflict:
+            try:
+                await add_child(self.bot.db, adopter_id, target_id)
+            except asyncpg.PostgresError as e:
+                error_msg = self._get_user_friendly_error(str(e))
                 return await interaction.followup.send(
-                    await tr(conflict_msg, interaction), ephemeral=True
+                    await tr(f"Cannot complete adoption: {error_msg}", interaction), ephemeral=True
+                )
+            except Exception as e:
+                logger.error(f"Unexpected error during adoption: {e}")
+                return await interaction.followup.send(
+                    await tr("An unexpected error occurred during adoption processing.", interaction), ephemeral=True
                 )
 
-            await add_child(self.bot.db, adopter_id, None, target_id)
+            logger.info(f"Adoption completed between adopter {adopter_id} and child {target_id}")
 
             try:
                 adopter = await self.bot.fetch_user(adopter_id)
@@ -557,10 +633,12 @@ class Relationship(commands.Cog):
     async def divorce(self, ctx: commands.Context):
         await ctx.defer()
 
-        await ensure_relationship(self.bot.db, ctx.author.id)
+        logger.info(f"User {ctx.author.id} ({ctx.author.name}) initiating divorce in guild {ctx.guild.id}")
+        await ensure_user(self.bot.db, ctx.author.id)
         partners = await get_user_partners(self.bot.db, ctx.author.id)
 
         if not partners:
+            logger.info(f"User {ctx.author.id} has no partners to divorce")
             return await ctx.reply(await tr("You are not married to anyone!", ctx))
 
         if len(partners) == 1:
@@ -594,7 +672,8 @@ class Relationship(commands.Cog):
                 color=discord.Color.red()
             )
 
-            view = PartnerSelectView(ctx.author.id, partners, self)
+            view = PartnerSelectView(ctx.author.id, partners, self, self.bot)
+            await view.create_options()
             await ctx.reply(embed=embed, view=view)
 
     async def _handle_divorce_confirm(self, interaction: discord.Interaction, user_id: int, partner_id: int):
@@ -643,10 +722,12 @@ class Relationship(commands.Cog):
     async def disown(self, ctx: commands.Context):
         await ctx.defer()
 
-        await ensure_relationship(self.bot.db, ctx.author.id)
+        logger.info(f"User {ctx.author.id} ({ctx.author.name}) initiating disown in guild {ctx.guild.id}")
+        await ensure_user(self.bot.db, ctx.author.id)
         children = await get_user_children(self.bot.db, ctx.author.id)
 
         if not children:
+            logger.info(f"User {ctx.author.id} has no children to disown")
             return await ctx.reply(await tr("You have no children to disown!", ctx))
 
         if len(children) == 1:
@@ -680,7 +761,8 @@ class Relationship(commands.Cog):
                 color=discord.Color.red()
             )
 
-            view = ChildSelectView(ctx.author.id, children, self)
+            view = ChildSelectView(ctx.author.id, children, self, self.bot)
+            await view.create_options()
             await ctx.reply(embed=embed, view=view)
 
     @commands.hybrid_command(name="leave-parents", description="Leave your parents (remove yourself as their child)")
@@ -688,19 +770,19 @@ class Relationship(commands.Cog):
     async def leave_parents(self, ctx: commands.Context):
         await ctx.defer()
 
-        await ensure_relationship(self.bot.db, ctx.author.id)
-        
-        user_data = await get_relationship_data(self.bot.db, ctx.author.id)
-        
-        if not user_data or not user_data['father_id']:
+        logger.info(f"User {ctx.author.id} ({ctx.author.name}) attempting to leave parents in guild {ctx.guild.id}")
+        await ensure_user(self.bot.db, ctx.author.id)
+
+        parent_id = await get_parent(self.bot.db, ctx.author.id)
+        if not parent_id:
             return await ctx.reply(await tr("You have no parent recorded!", ctx))
 
         parent_info = []
         try:
-            parent = await self.bot.fetch_user(user_data['father_id'])
+            parent = await self.bot.fetch_user(parent_id)
             parent_info.append(f" {parent.name}")
         except:
-            parent_info.append(f" <@{user_data['father_id']}>")
+            parent_info.append(f" <@{parent_id}>")
 
         embed = discord.Embed(
             title="Leave Parent Confirmation",
@@ -817,7 +899,7 @@ class Relationship(commands.Cog):
         if target is None:
             target = ctx.author
 
-        await ensure_relationship(self.bot.db, target.id)
+        await ensure_user(self.bot.db, target.id)
 
         try:
             data = await get_relationship_data(self.bot.db, target.id)
@@ -875,23 +957,25 @@ class Relationship(commands.Cog):
                     inline=False
                 )
 
-            if data and data['father_id']:
+            parent_ids = await get_parents(self.bot.db, target.id)
+            if parent_ids:
                 parent_info = []
-                try:
-                    parent_user = await self.bot.fetch_user(data['father_id'])
-                    parent_info.append(f" {parent_user.name}")
-                except:
-                    parent_info.append(f" <@{data['father_id']}>")
+                for parent_id in parent_ids:
+                    try:
+                        parent_user = await self.bot.fetch_user(parent_id)
+                        parent_info.append(f"👨‍👩‍👧‍👦 {parent_user.name}")
+                    except:
+                        parent_info.append(f"👨‍👩‍👧‍👦 <@{parent_id}>")
 
                 embed.add_field(
-                    name=":family: Parent",
+                    name=":family: Parents",
                     value="\n".join(parent_info),
                     inline=False
                 )
             else:
                 embed.add_field(
-                    name=":family: Parent",
-                    value="No parent recorded",
+                    name=":family: Parents",
+                    value="No parents recorded",
                     inline=False
                 )
 
@@ -901,9 +985,95 @@ class Relationship(commands.Cog):
             logger.error(f"Relationships command error: {e}")
             await ctx.reply(await tr("An error occurred retrieving relationship information.", ctx))
 
-    
+    @commands.hybrid_command(name="family-tree", description="View your family tree as a visual graph")
+    async def family_tree(self, ctx: commands.Context, target: Optional[discord.Member] = None):
+        await ctx.defer()
 
-   
+        if target is None:
+            target = ctx.author
+
+        await ensure_user(self.bot.db, target.id)
+
+        try:
+            family_data = await get_all_family_members(self.bot.db, target.id, max_generations=5)
+
+            if not family_data:
+                return await ctx.reply(await tr("No family data found.", ctx))
+
+            dot = graphviz.Digraph(comment='Family Tree', format='png')
+            dot.attr(rankdir='TB', size='10,10')
+
+            user_names = {}
+            for member in family_data:
+                try:
+                    user = await self.bot.fetch_user(member['id'])
+                    user_names[member['id']] = user.name[:20]
+                except:
+                    user_names[member['id']] = f"User {member['id']}"
+
+            # Group members by generation for rank constraints
+            generations = {}
+            for member in family_data:
+                gen = member['generation']
+                if gen not in generations:
+                    generations[gen] = []
+                generations[gen].append(member['id'])
+
+            # Create nodes
+            for member in family_data:
+                user_id = member['id']
+                user_name = user_names[user_id]
+
+                if member['generation'] == 0:
+                    dot.node(str(user_id), user_name, shape='box', style='filled', fillcolor='lightblue')
+                elif member['generation'] < 0:
+                    dot.node(str(user_id), user_name, shape='ellipse', style='filled', fillcolor='lightgreen')
+                else:
+                    dot.node(str(user_id), user_name, shape='ellipse', style='filled', fillcolor='lightyellow')
+
+            # Add rank constraints to keep generations at same level
+            for gen, member_ids in generations.items():
+                if len(member_ids) > 1:
+                    with dot.subgraph() as s:
+                        s.attr(rank='same')
+                        for member_id in member_ids:
+                            s.node(str(member_id))
+
+            # Add parent-child edges
+            for member in family_data:
+                for parent_id in member['parents']:  # Handle multiple parents
+                    if parent_id:
+                        dot.edge(str(parent_id), str(member['id']))
+
+            # Add marriage edges
+            for member in family_data:
+                for partner_id in member['partners']:
+                    if partner_id > member['id']:  # Only add edge once per couple
+                        dot.edge(str(member['id']), str(partner_id), style='dashed', color='red', arrowhead='none', label='Married')
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                tmp_file_path = os.path.join(tmp_dir, 'family_tree.png')
+                try:
+                    dot.render(tmp_file_path.replace('.png', ''), format='png', cleanup=True)
+
+                    embed = discord.Embed(
+                        title=f"Family Tree for {target.display_name}",
+                        color=discord.Color.blue()
+                    )
+                    embed.set_image(url="attachment://family_tree.png")
+
+                    file = discord.File(tmp_file_path, filename="family_tree.png")
+                    await ctx.reply(embed=embed, file=file)
+                finally:
+                    if os.path.exists(tmp_file_path):
+                        os.unlink(tmp_file_path)
+
+        except Exception as e:
+            logger.error(f"Family tree command error: {e}")
+            await ctx.reply(await tr("An error occurred generating the family tree.", ctx))
+
+
+
     async def cog_command_error(self, ctx, error):
         if isinstance(error, commands.CommandOnCooldown):
             try:

@@ -4,7 +4,14 @@ import discord
 from discord.ext import commands
 from typing import Literal
 import aiohttp, traceback
-from utils.db_helpers import ensure_user, get_user_partners, get_user_children, get_relationship_data, ensure_relationship
+from utils.db_helpers import (
+    ensure_user,
+    get_user_partners,
+    get_user_children,
+    get_parent,
+    get_parents,
+    is_too_closely_related,
+)
 from dotenv import load_dotenv
 from utils.singleton import EffectID
 from utils.translation import translate as tr, translate_bulk
@@ -20,31 +27,74 @@ ACTIVITY_TIMEOUT = timedelta(minutes=30)  # User must have chatted in last 30 mi
 
 load_dotenv()
 
+logger = logging.getLogger("RPG_MISC")
+
 class RPG_MISC(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
     async def check_family_relationship(self, user_id: int, target_id: int):
-        """Check if two users are family members and return relationship type"""
-        await ensure_relationship(self.bot.db, user_id)
-        await ensure_relationship(self.bot.db, target_id)
-        
-        user_partners = await get_user_partners(self.bot.db, user_id)
-        user_children = await get_user_children(self.bot.db, user_id)
-        user_data = await get_relationship_data(self.bot.db, user_id)
-        
-        if target_id in user_partners:
+        """
+        Returns:
+            (True, relation) where relation in {"partner", "parent", "child", "sibling", "ancestor", "descendant", "extended_family"}
+            or (False, "")
+        """
+        await ensure_user(self.bot.db, user_id)
+        await ensure_user(self.bot.db, target_id)
+
+        partners = await get_user_partners(self.bot.db, user_id)
+        if target_id in partners:
             return True, "partner"
-        elif target_id in user_children:
+
+        children = await get_user_children(self.bot.db, user_id)
+        if target_id in children:
             return True, "child"
-        elif user_data and user_data['father_id'] == target_id:
+
+        parent_ids = await get_parents(self.bot.db, user_id)
+        if target_id in parent_ids:
             return True, "parent"
-        else:
-            # Check if target considers user as family
-            target_children = await get_user_children(self.bot.db, target_id)
-            if user_id in target_children:
-                return True, "parent"
-        
+
+        # Reverse check: target considers user as parent
+        target_parent_ids = await get_parents(self.bot.db, target_id)
+        if user_id in target_parent_ids:
+            return True, "child"
+
+        # Check for siblings (common parent)
+        common_parents = set(parent_ids) & set(target_parent_ids)
+        if common_parents:
+            return True, "sibling"
+
+        # Check for extended family relationships (up to 3 generations)
+        is_related = await is_too_closely_related(self.bot.db, user_id, target_id, depth=3)
+        if is_related:
+            return True, "extended_family"
+
+        # Check for ancestor/descendant relationship
+        async with self.bot.db.acquire() as conn:
+            is_ancestor = await conn.fetchval("""
+                WITH RECURSIVE ancestors(id) AS (
+                    SELECT parent_id FROM parents WHERE child_id = $1
+                    UNION
+                    SELECT p.parent_id FROM parents p JOIN ancestors a ON p.child_id = a.id
+                )
+                SELECT EXISTS(SELECT 1 FROM ancestors WHERE id = $2)
+            """, user_id, target_id)
+
+            if is_ancestor:
+                return True, "ancestor"
+
+            is_descendant = await conn.fetchval("""
+                WITH RECURSIVE descendants(id) AS (
+                    SELECT child_id FROM parents WHERE parent_id = $1
+                    UNION
+                    SELECT p.child_id FROM parents p JOIN descendants d ON p.parent_id = d.id
+                )
+                SELECT EXISTS(SELECT 1 FROM descendants WHERE id = $2)
+            """, user_id, target_id)
+
+            if is_descendant:
+                return True, "descendant"
+
         return False, ""
 
     async def add_mood(self, conn, user_id: int, amount: int):
@@ -53,6 +103,15 @@ class RPG_MISC(commands.Cog):
             return
         new_mood = min(row["mood"] + amount, row["mood_max"])
         await conn.execute("UPDATE users SET mood = $1 WHERE id = $2", new_mood, user_id)
+
+    async def maybe_apply_social_buff(self, conn, user_id: int):
+        if random.random() < 0.20:
+            await conn.execute("""
+                INSERT INTO current_effects (user_id, effect_id, duration, ticks, applied_at)
+                VALUES ($1, 8, 120, 120, NOW())
+                ON CONFLICT (user_id, effect_id)
+                DO UPDATE SET duration = 120, ticks = 120, applied_at = NOW()
+            """, user_id)
 
     async def fetch_gif(self, query: str) -> str | None:
         giphy_api_key = os.getenv("GIPHY_API_KEY")
@@ -69,7 +128,7 @@ class RPG_MISC(commands.Cog):
                     if gifs:
                         return random.choice(gifs)["images"]["original"]["url"]
         except Exception as e:
-            print(f"[ERROR] Failed to fetch gif: {e}")
+            logger.exception("Unhandled error in RPG_MISC", exc_info=e)
         return None
 
     # =========================
@@ -102,13 +161,7 @@ class RPG_MISC(commands.Cog):
                 mood_text = "+5 (both users)"
                 gif_query = "hug"
             
-            if random.random() < 0.20:
-                await conn.execute("""
-                    INSERT INTO current_effects (user_id, effect_id, duration, ticks, applied_at)
-                    VALUES ($1, 8, 120, 120, NOW())
-                    ON CONFLICT (user_id, effect_id) DO UPDATE
-                    SET duration = 120, ticks = 120, applied_at = NOW()
-                """, ctx.author.id)
+            await self.maybe_apply_social_buff(conn, ctx.author.id)
 
         gif_url = await self.fetch_gif(gif_query)
         translations = await translate_bulk([
@@ -165,13 +218,7 @@ class RPG_MISC(commands.Cog):
                 mood_text = "+5 (both users)"
                 gif_query = "anime kiss"
             
-            if random.random() < 0.20:
-                await conn.execute("""
-                    INSERT INTO current_effects (user_id, effect_id, duration, ticks, applied_at)
-                    VALUES ($1, 8, 120, 120, NOW())
-                    ON CONFLICT (user_id, effect_id) DO UPDATE
-                    SET duration = 120, ticks = 120, applied_at = NOW()
-                """, ctx.author.id)
+            await self.maybe_apply_social_buff(conn, ctx.author.id)
 
         gif_url = await self.fetch_gif(gif_query)
         translations = await translate_bulk([
@@ -213,13 +260,7 @@ class RPG_MISC(commands.Cog):
             await self.add_mood(conn, ctx.author.id, 5)
             await self.add_mood(conn, target.id, 5)
             
-            if random.random() < 0.20:
-                await conn.execute("""
-                    INSERT INTO current_effects (user_id, effect_id, duration, ticks, applied_at)
-                    VALUES ($1, 8, 120, 120, NOW())
-                    ON CONFLICT (user_id, effect_id) DO UPDATE
-                    SET duration = 120, ticks = 120, applied_at = NOW()
-                """, ctx.author.id)
+            await self.maybe_apply_social_buff(conn, ctx.author.id)
 
         gif_url = await self.fetch_gif("respectful salute")
         translations = await translate_bulk([
@@ -272,13 +313,7 @@ class RPG_MISC(commands.Cog):
                 mood_text = "+5 (both users)"
                 gif_query = "head pat"
             
-            if random.random() < 0.20:
-                await conn.execute("""
-                    INSERT INTO current_effects (user_id, effect_id, duration, ticks, applied_at)
-                    VALUES ($1, 8, 120, 120, NOW())
-                    ON CONFLICT (user_id, effect_id) DO UPDATE
-                    SET duration = 120, ticks = 120, applied_at = NOW()
-                """, ctx.author.id)
+            await self.maybe_apply_social_buff(conn, ctx.author.id)
 
         gif_url = await self.fetch_gif(gif_query)
         translations = await translate_bulk([
@@ -463,9 +498,7 @@ class RPG_MISC(commands.Cog):
                 embed.add_field(name="Status", value="Target detected intrusion", inline=False)
                 return await ctx.reply(content=target.mention, embed=embed)
 
-    # =========================
-    # Rest Command (with effect icon)
-    # =========================
+ 
     @commands.hybrid_command(description="Rest to regain energy.")
     @commands.cooldown(1, 60, commands.BucketType.user)
     async def rest(self, ctx: commands.Context):
@@ -521,9 +554,9 @@ class RPG_MISC(commands.Cog):
             except discord.errors.NotFound:
                 pass
             except Exception as e:
-                print(f"[ERROR] Failed to send cooldown message: {e}")
+                logger.exception("Unhandled error in RPG_MISC", exc_info=e)
             return
-        print("[ERROR]", type(error).__name__, error)
+        logger.exception("Unhandled error in RPG_MISC", exc_info=error)
     # ---------------- listener: cancel resting on message ----------------
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -591,7 +624,7 @@ class RPG_MISC(commands.Cog):
                     except Exception:
                         pass
 
-                print(f"[RPG_MISC] Resting effect removed for {message.author} (by message).")
+                logger.info("Resting effect removed for user_id=%s", message.author.id)
 
         except Exception:
             traceback.print_exc()

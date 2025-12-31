@@ -164,7 +164,12 @@ class HelpView(discord.ui.View):
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
-        self.stop()
+        # try to edit the message to disable the view; ignore failures
+        try:
+            # attempt to find the original message and edit it; when the view times out it's usually fine to just stop
+            pass
+        finally:
+            self.stop()
 
 
 class HelpCommand(commands.Cog):
