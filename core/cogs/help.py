@@ -31,9 +31,6 @@ class HelpView(discord.ui.View):
         self.add_item(self.select)
 
         # Navigation buttons to move between pages of categories
-        self.add_item(discord.ui.Button(label="Previous Page", style=discord.ButtonStyle.secondary, custom_id="help_prev"))
-        self.add_item(discord.ui.Button(label="Next Page", style=discord.ButtonStyle.secondary, custom_id="help_next"))
-        self.add_item(discord.ui.Button(label="Close", style=discord.ButtonStyle.danger, custom_id="help_close"))
 
     def build_options_for_current_page(self):
         """Return a list of SelectOption for the current page. Always includes 'Home' first."""
@@ -146,7 +143,7 @@ class HelpView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="Previous Page", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Previous Page", style=discord.ButtonStyle.secondary, custom_id="help_prev", row=1)
     async def previous_page_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         # Move to previous page if possible
         if self.page_index > 0:
@@ -157,7 +154,7 @@ class HelpView(discord.ui.View):
         else:
             await interaction.response.send_message("You're already on the first page.", ephemeral=True)
 
-    @discord.ui.button(label="Next Page", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Next Page", style=discord.ButtonStyle.secondary, custom_id="help_next", row=1)
     async def next_page_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         max_index = (len(self.cog_names) - 1) // self.page_size
         if self.page_index < max_index:
@@ -167,7 +164,7 @@ class HelpView(discord.ui.View):
         else:
             await interaction.response.send_message("You're already on the last page.", ephemeral=True)
 
-    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, custom_id="help_close", row=1)
     async def close_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         await interaction.response.edit_message(content="Help menu closed.", embed=None, view=None)
         self.stop()
