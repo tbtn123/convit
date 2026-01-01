@@ -527,6 +527,15 @@ class Econ(commands.Cog):
                     materials_found = []
                     
                     # Roll for materials
+
+                    if random.random() < 0.50:
+                        scrap_amt = random.randint(1, 3)
+                        await conn.execute("""
+                            INSERT INTO inventory (id, item_id, quantity) VALUES ($1, 3, $2)
+                            ON CONFLICT (id, item_id) DO UPDATE SET quantity = inventory.quantity + $2
+                        """, uid, scrap_amt)
+                        materials_found.append(f"{scrap_amt}x Scrap")
+
                     if random.random() < 0.40:
                         wood_amt = random.randint(1, 3)
                         await conn.execute("""

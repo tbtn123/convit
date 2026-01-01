@@ -7,16 +7,29 @@ from datetime import datetime, timedelta
 from utils.db_helpers import *
 from utils.singleton import ItemID
 
-DEBUG = True
+# Mining Results View with continue button
+class MiningResultsView(discord.ui.View):
+    def __init__(self, cog, user_id):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.user_id = user_id
 
-# Mining View with buttons
+    @discord.ui.button(label="Continue Mining", style=discord.ButtonStyle.primary)
+    async def continue_mining(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("This is not your mining interface.", ephemeral=True)
+
+        await interaction.response.defer()
+        await self.cog.show_mining_panel(interaction, self.user_id, edit=True)
+
+
 class MiningView(discord.ui.View):
     def __init__(self, cog, user_id):
         super().__init__(timeout=120)
         self.cog = cog
         self.user_id = user_id
     
-    @discord.ui.button(label="⬆️ Go Up", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Go Up", style=discord.ButtonStyle.secondary)
     async def go_up(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
             return await interaction.response.send_message("This is not your mining interface.", ephemeral=True)
@@ -27,21 +40,35 @@ class MiningView(discord.ui.View):
         if current_depth <= 0:
             return await interaction.followup.send("Already at surface level.", ephemeral=True)
         
-        # Go up 5 meters
+
         new_depth = max(0, current_depth - 5)
         self.cog.bot.mining_depth_cache[self.user_id] = new_depth
         
         await self.cog.show_mining_panel(interaction, self.user_id, edit=True)
     
-    @discord.ui.button(label="⛏️ Mine Here", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Mine Here", style=discord.ButtonStyle.primary)
     async def mine_here(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
             return await interaction.response.send_message("This is not your mining interface.", ephemeral=True)
-        
+
         await interaction.response.defer()
-        await self.cog.perform_mining(interaction, self.user_id)
+
+       
+        status, data = await self.cog.perform_mining(interaction, self.user_id)
+
+        if status == "error":
+            # error message a followup and don't update panel
+            embed = discord.Embed(
+                title=data['title'],
+                description=data['description'],
+                color=data['color']
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            # results in the panel
+            await self.cog.show_mining_panel(interaction, self.user_id, edit=True, mining_results=data)
     
-    @discord.ui.button(label="⬇️ Go Down", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Go Down", style=discord.ButtonStyle.secondary)
     async def go_down(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
             return await interaction.response.send_message("This is not your mining interface.", ephemeral=True)
@@ -50,7 +77,7 @@ class MiningView(discord.ui.View):
         
         current_depth = self.cog.bot.mining_depth_cache.get(self.user_id, 0)
         
-        # Go down 5 meters
+        # down 5 meters
         new_depth = current_depth + 5
         self.cog.bot.mining_depth_cache[self.user_id] = new_depth
         
@@ -239,48 +266,109 @@ class Mining(commands.Cog):
         
         return None
 
-    async def show_mining_panel(self, ctx_or_interaction, user_id, edit=False):
+    async def show_mining_panel(self, ctx_or_interaction, user_id, edit=False, mining_results=None):
         """Show the mining interface panel"""
         async with self.bot.db.acquire() as conn:
             user = await conn.fetchrow("SELECT * FROM users WHERE id = $1", user_id)
-            
+
             # Get or initialize depth
             if user_id not in self.bot.mining_depth_cache:
                 self.bot.mining_depth_cache[user_id] = 0
-            
+
             current_depth = self.bot.mining_depth_cache[user_id]
             zone_name, _ = self.get_zone_info(current_depth)
-            
+
             # Check pickaxe
-            pickaxe = await conn.fetchrow(
-                "SELECT * FROM inventory WHERE id = $1 AND item_id = 6", user_id
-            )
-            has_pickaxe = pickaxe and pickaxe["quantity"] > 0
+            pickaxe = await conn.fetchrow("""
+                SELECT i.* FROM inventory i
+                INNER JOIN item_effects ie ON i.item_id = ie.item_id
+                WHERE i.id = $1 AND ie.name = 'mining_tool' AND i.quantity > 0
+                LIMIT 1
+            """, user_id)
+            has_pickaxe = pickaxe is not None
+
+            # If we have mining results, show them instead of the normal interface
+            if mining_results:
+                embed = discord.Embed(
+                    title="Mining operation complete",
+                    description=f"Status {'Event triggered' if mining_results.get('event_result') else 'Success'}.",
+                    color=mining_results.get('event_result', {}).get('color', discord.Color.blue()) if mining_results.get('event_result') else discord.Color.blue()
+                )
+
+                # Add event info if occurred
+                if mining_results.get('event_result'):
+                    event_result = mining_results['event_result']
+                    embed.add_field(
+                        name=event_result['title'],
+                        value=f"{event_result['description']}\n{event_result['effects']}",
+                        inline=False
+                    )
+
+                # Add resources acquired
+                if mining_results.get('loot_items'):
+                    loot_text = ""
+                    for item_id, quantity in mining_results['loot_items']:
+                        item_row = await conn.fetchrow("SELECT * FROM items WHERE id = $1", item_id)
+                        loot_text += f"{item_row['icon']} {item_row['name']} x{quantity}\n"
+                    embed.add_field(
+                        name="Resources Acquired",
+                        value=loot_text.strip(),
+                        inline=False
+                    )
+                else:
+                    embed.add_field(
+                        name="Resources Acquired",
+                        value="None detected",
+                        inline=False
+                    )
+
+                # Add depth and zone info
+                embed.add_field(
+                    name="Current Depth",
+                    value=f"{current_depth}m\nZone: {zone_name}",
+                    inline=True
+                )
+
+                # Add energy status
+                embed.add_field(
+                    name="Energy",
+                    value=f"{user['energy']}/{user['energy_max']}",
+                    inline=True
+                )
+
+                embed.set_footer(text="Click 'Continue Mining' to return to the mining interface.")
+                view = MiningResultsView(self, user_id)
+            else:
+                # Normal mining interface
+                embed = discord.Embed(
+                    title="Mining Interface",
+                    description=f"Current location depth {current_depth} meters.",
+                    color=discord.Color.blue()
+                )
+                embed.add_field(name="Zone", value=zone_name, inline=True)
+                embed.add_field(name="Energy", value=f"{user['energy']}/{user['energy_max']}", inline=True)
+                embed.add_field(name="Equipment", value="Pickaxe equipped" if has_pickaxe else "⚠️ Pickaxe required", inline=True)
+
+                # Show zone loot info
+                loot_table = self.get_zone_loot_table(current_depth)
+                loot_info = []
+                for item_id, prob in loot_table.items():
+                    item_row = await conn.fetchrow("SELECT name, icon FROM items WHERE id = $1", item_id)
+                    if item_row:
+                        loot_info.append(f"{item_row['icon']} {item_row['name']} ({int(prob*100)}%)")
+
+                embed.add_field(name="Available Resources", value="\n".join(loot_info) if loot_info else "None", inline=False)
+                embed.set_footer(text="Use buttons to navigate or mine. Mining costs 10 energy.")
+
+                view = MiningView(self, user_id)
             
-            embed = discord.Embed(
-                title="Mining Interface",
-                description=f"Current location depth {current_depth} meters.",
-                color=discord.Color.blue()
-            )
-            embed.add_field(name="Zone", value=zone_name, inline=True)
-            embed.add_field(name="Energy", value=f"{user['energy']}/{user['energy_max']}", inline=True)
-            embed.add_field(name="Equipment", value="Pickaxe equipped" if has_pickaxe else "⚠️ Pickaxe required", inline=True)
-            
-            # Show zone loot info
-            loot_table = self.get_zone_loot_table(current_depth)
-            loot_info = []
-            for item_id, prob in loot_table.items():
-                item_row = await conn.fetchrow("SELECT name, icon FROM items WHERE id = $1", item_id)
-                if item_row:
-                    loot_info.append(f"{item_row['icon']} {item_row['name']} ({int(prob*100)}%)")
-            
-            embed.add_field(name="Available Resources", value="\n".join(loot_info) if loot_info else "None", inline=False)
-            embed.set_footer(text="Use buttons to navigate or mine. Mining costs 10 energy.")
-            
-            view = MiningView(self, user_id)
-            
-            if edit and hasattr(ctx_or_interaction, 'edit_original_response'):
-                await ctx_or_interaction.edit_original_response(embed=embed, view=view)
+            if edit:
+                # For button interactions, edit the original response
+                if hasattr(ctx_or_interaction, 'edit_original_response'):
+                    await ctx_or_interaction.edit_original_response(embed=embed, view=view)
+                else:
+                    # For regular interactions from buttons
+                    await ctx_or_interaction.edit_original_response(embed=embed, view=view)
             else:
                 await ctx_or_interaction.send(embed=embed, view=view)
     
@@ -310,139 +398,85 @@ class Mining(commands.Cog):
             async with self.bot.db.acquire() as conn:
                 user = await conn.fetchrow("SELECT * FROM users WHERE id = $1", user_id)
                 if not user or user["energy"] < base_cost:
-                    return await interaction.followup.send(
-                        embed=discord.Embed(
-                            title="Warning. Energy insufficient",
-                            description=f"Energy level at {user['energy'] if user else 0} out of {user['energy_max'] if user else 100}. Minimum {base_cost} required. Rest or consume energy items.",
-                            color=discord.Color.red()
-                        ),
-                        ephemeral=True
-                    )
-
-                if DEBUG: print("DEBUG - user:", dict(user))
+                    return "error", {
+                        'type': 'insufficient_energy',
+                        'title': 'Warning. Energy insufficient',
+                        'description': f"Energy level at {user['energy'] if user else 0} out of {user['energy_max'] if user else 100}. Minimum {base_cost} required. Rest or consume energy items.",
+                        'color': discord.Color.red()
+                    }
 
                 # check pickaxe
-                pickaxe = await conn.fetchrow(
-                    "SELECT * FROM inventory WHERE id = $1 AND item_id = 6", user_id
-                )
-                if not pickaxe or pickaxe["quantity"] <= 0:
-                    return await interaction.followup.send(
-                        embed=discord.Embed(
-                            title="Error. Equipment missing",
-                            description="Pickaxe required. Not found in inventory. Action denied.",
-                            color=discord.Color.red()
-                        ),
-                        ephemeral=True
-                    )
+                pickaxe = await conn.fetchrow("""
+                    SELECT i.* FROM inventory i
+                    INNER JOIN item_effects ie ON i.item_id = ie.item_id
+                    WHERE i.id = $1 AND ie.name = 'mining_tool' AND i.quantity > 0
+                    LIMIT 1
+                """, user_id)
+                if not pickaxe:
+                    return "error", {
+                        'type': 'no_pickaxe',
+                        'title': 'Error. Equipment missing',
+                        'description': "Pickaxe required. Not found in inventory. Action denied.",
+                        'color': discord.Color.red()
+                    }
 
                 # Get current depth
                 current_depth = self.bot.mining_depth_cache.get(user_id, 0)
-                
+
                 # Check for mining event BEFORE mining
                 event_result = await self.process_mining_event(conn, user_id, current_depth, user)
-                
+
                 # If cave-in occurred, depth is already reset
                 if event_result and event_result['type'] == 'cave_in':
                     current_depth = 0
-                
+
                 # Deduct energy
                 await conn.execute(
                     "UPDATE users SET energy = energy - $1 WHERE id = $2",
                     base_cost, user_id
                 )
-                
+
                 # Get zone-based loot table
                 loot_table = self.get_zone_loot_table(current_depth)
-                
+
                 # Determine loot
                 loot_items = []
                 ore_multiplier = 3 if (event_result and event_result['type'] == 'rich_vein') else 1
-                
+
                 for item_id, probability in loot_table.items():
                     if random.random() <= probability:
                         quantity = ore_multiplier
                         loot_items.append((item_id, quantity))
-                        
+
                         # Add to inventory
                         await conn.execute("""
                             INSERT INTO inventory (id, item_id, quantity)
                             VALUES ($1, $2, $3)
                             ON CONFLICT (id, item_id) DO UPDATE SET quantity = inventory.quantity + $3
                         """, user_id, item_id, quantity)
-                
+
                 # Increase depth by 1-3 meters (unless cave-in)
                 if not (event_result and event_result['type'] == 'cave_in'):
                     depth_gain = random.randint(1, 3)
                     current_depth += depth_gain
                     self.bot.mining_depth_cache[user_id] = current_depth
-                
-                # Get zone info
-                zone_name, _ = self.get_zone_info(current_depth)
-                
-                # Refresh user data for display
-                user = await conn.fetchrow("SELECT * FROM users WHERE id = $1", user_id)
-                
-                # Build response embed
-                embed = discord.Embed(
-                    title="Mining operation complete",
-                    description=f"Status {'Event triggered' if event_result else 'Success'}.",
-                    color=event_result['color'] if event_result else discord.Color.blue()
-                )
-                
-                # Add event info if occurred
-                if event_result:
-                    embed.add_field(
-                        name=event_result['title'],
-                        value=f"{event_result['description']}\n{event_result['effects']}",
-                        inline=False
-                    )
-                
-                # Add resources acquired
-                if loot_items:
-                    loot_text = ""
-                    for item_id, quantity in loot_items:
-                        item_row = await conn.fetchrow("SELECT * FROM items WHERE id = $1", item_id)
-                        loot_text += f"{item_row['icon']} {item_row['name']} x{quantity}\n"
-                    embed.add_field(
-                        name="Resources Acquired",
-                        value=loot_text.strip(),
-                        inline=False
-                    )
-                else:
-                    embed.add_field(
-                        name="Resources Acquired",
-                        value="None detected",
-                        inline=False
-                    )
-                
-                # Add depth and zone info
-                embed.add_field(
-                    name="Current Depth",
-                    value=f"{current_depth}m\nZone: {zone_name}",
-                    inline=True
-                )
-                
-                # Add energy status
-                embed.add_field(
-                    name="Energy",
-                    value=f"{user['energy']}/{user['energy_max']}",
-                    inline=True
-                )
-                
-                await interaction.followup.send(embed=embed)
-                
-                # Update the panel
-                await self.show_mining_panel(interaction, user_id, edit=True)
+
+                # Return mining results data
+                return "success", {
+                    'event_result': event_result,
+                    'loot_items': loot_items,
+                    'current_depth': current_depth
+                }
 
         except Exception as e:
-            embed = discord.Embed(
-                title="Error. System malfunction",
-                description="An unexpected error occurred. Retry operation.",
-                color=discord.Color.red()
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
             print(f"[ERROR] perform_mining {user_id}: {e}")
             traceback.print_exc()
+            return "error", {
+                'type': 'system_error',
+                'title': 'Error. System malfunction',
+                'description': "An unexpected error occurred. Retry operation.",
+                'color': discord.Color.red()
+            }
 
 
 async def setup(bot):
