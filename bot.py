@@ -5,6 +5,8 @@ from discord.ext import commands
 from dotenv import load_dotenv
 import asyncpg
 import uvicorn
+from datetime import datetime, timezone
+
 from utils.misc import get_system_info
 from datetime import datetime, timezone
 
