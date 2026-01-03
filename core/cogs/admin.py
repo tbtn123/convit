@@ -3,7 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 import logging
 from rapidfuzz import process, fuzz
-
+from utils.db_helpers import ensure_guild_cfg
 LOCALE_MAP = {
     "af": "Afrikaans - Afrikaans",
     "sq": "Albanian - Shqip",
@@ -133,6 +133,72 @@ class Admin(commands.GroupCog, name="admin"):
         
         return choices[:25]
 
+    @commands.hybrid_command(name="set-transfer-tax", description="Set the transfer tax rate (0.0 to 1.0)")
+    @commands.has_permissions(administrator=True)
+    @app_commands.describe(tax_rate="Tax rate as decimal (e.g., 0.1 for 10%)")
+    async def set_tax_transfer(self, ctx: commands.Context, tax_rate: float):
+        TAX_CAP = 1.0
+
+        # Ensure tax rate is between 0 and 1 (0% to 100%)
+        tax_rate = max(0.0, min(tax_rate, TAX_CAP))
+
+        percentage = tax_rate * 100
+        try:
+            await ensure_guild_cfg(self.bot.db, ctx.guild.id)
+            async with self.bot.db.acquire() as conn:
+                await conn.execute(
+                    "UPDATE guild_config SET transfer_tax_rate = $1 WHERE guild_id = $2",
+                    tax_rate, ctx.guild.id
+                )
+
+                embed = discord.Embed(
+                    title="Transfer Tax Updated",
+                    description=f"Transfer tax rate set to {percentage:.1f}%. Members will pay this tax on commands like `/give-coins`.",
+                    color=discord.Color.green()
+                )
+                await ctx.reply(embed=embed)
+
+        except Exception as e:
+            logging.exception(e)
+            embed = discord.Embed(
+                title="Database Error",
+                description="An error occurred while updating the tax rate. Please try again later.",
+                color=discord.Color.red()
+            )
+            await ctx.reply(embed=embed)
+
+
+
+
+    @commands.hybrid_command(name="get-transfer-tax", description="Get the current transfer tax rate")
+    async def get_transfer_tax(self, ctx: commands.Context):
+        try:
+            await ensure_guild_cfg(self.bot.db, ctx.guild.id)
+            async with self.bot.db.acquire() as conn:
+                tax_rate = await conn.fetchval(
+                    "SELECT transfer_tax_rate FROM guild_config WHERE guild_id = $1",
+                    ctx.guild.id
+                )
+
+                if tax_rate is None:
+                    tax_rate = 0.0
+
+                percentage = tax_rate * 100
+                embed = discord.Embed(
+                    title="Transfer Tax Rate",
+                    description=f"Current transfer tax rate: {percentage:.1f}%",
+                    color=discord.Color.blue()
+                )
+                await ctx.reply(embed=embed)
+
+        except Exception as e:
+            logging.exception(e)
+            embed = discord.Embed(
+                title="Database Error",
+                description="An error occurred while retrieving the tax rate. Please try again later.",
+                color=discord.Color.red()
+            )
+            await ctx.reply(embed=embed)
     @commands.hybrid_command(name="set-prefix", description="Set server prefix")
     @commands.has_permissions(administrator=True)
     async def set_prefix(self, ctx: commands.Context, prefix: str):

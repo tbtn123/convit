@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import asyncio
+import aiohttp
 import random
 import tempfile
 import os
@@ -10,8 +11,6 @@ import io
 import logging
 from datetime import datetime, timezone
 from typing import Optional
-import graphviz
-import graphviz_static
 from utils.db_helpers import *
 from utils.translation import translate as tr
 from utils.datetime_helpers import utc_now, ensure_utc, format_discord_timestamp
@@ -1000,8 +999,10 @@ class Relationship(commands.Cog):
             if not family_data:
                 return await ctx.reply(await tr("No family data found.", ctx))
 
-            dot = graphviz.Digraph(comment='Family Tree', format='png')
-            dot.attr(rankdir='TB', size='10,10')
+            # Build DOT source string
+            dot_lines = ['digraph FamilyTree {']
+            dot_lines.append('  rankdir=TB;')
+            dot_lines.append('  size="10,10";')
 
             user_names = {}
             for member in family_data:
@@ -1022,51 +1023,58 @@ class Relationship(commands.Cog):
             # Create nodes
             for member in family_data:
                 user_id = member['id']
-                user_name = user_names[user_id]
+                user_name = user_names[user_id].replace('"', '\\"')  # Escape quotes
 
                 if member['generation'] == 0:
-                    dot.node(str(user_id), user_name, shape='box', style='filled', fillcolor='lightblue')
+                    dot_lines.append(f'  "{user_id}" [label="{user_name}", shape=box, style=filled, fillcolor=lightblue];')
                 elif member['generation'] < 0:
-                    dot.node(str(user_id), user_name, shape='ellipse', style='filled', fillcolor='lightgreen')
+                    dot_lines.append(f'  "{user_id}" [label="{user_name}", shape=ellipse, style=filled, fillcolor=lightgreen];')
                 else:
-                    dot.node(str(user_id), user_name, shape='ellipse', style='filled', fillcolor='lightyellow')
+                    dot_lines.append(f'  "{user_id}" [label="{user_name}", shape=ellipse, style=filled, fillcolor=lightyellow];')
 
             # Add rank constraints to keep generations at same level
             for gen, member_ids in generations.items():
                 if len(member_ids) > 1:
-                    with dot.subgraph() as s:
-                        s.attr(rank='same')
-                        for member_id in member_ids:
-                            s.node(str(member_id))
+                    rank_nodes = ' '.join(f'"{member_id}"' for member_id in member_ids)
+                    dot_lines.append(f'  {{ rank=same; {rank_nodes}; }}')
 
             # Add parent-child edges
             for member in family_data:
                 for parent_id in member['parents']:  # Handle multiple parents
                     if parent_id:
-                        dot.edge(str(parent_id), str(member['id']))
+                        dot_lines.append(f'  "{parent_id}" -> "{member["id"]}";')
 
             # Add marriage edges
             for member in family_data:
                 for partner_id in member['partners']:
                     if partner_id > member['id']:  # Only add edge once per couple
-                        dot.edge(str(member['id']), str(partner_id), style='dashed', color='red', arrowhead='none', label='Married')
+                        dot_lines.append(f'  "{member["id"]}" -> "{partner_id}" [style=dashed, color=red, arrowhead=none, label="Married"];')
 
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                tmp_file_path = os.path.join(tmp_dir, 'family_tree.png')
-                try:
-                    dot.render(tmp_file_path.replace('.png', ''), format='png', cleanup=True)
+            dot_lines.append('}')
+            dot_source = '\n'.join(dot_lines)
 
-                    embed = discord.Embed(
-                        title=f"Family Tree for {target.display_name}",
-                        color=discord.Color.blue()
-                    )
-                    embed.set_image(url="attachment://family_tree.png")
+            # Send to Kroki API
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    'https://kroki.io/graphviz/png',
+                    data=dot_source,
+                    headers={'Content-Type': 'text/plain'}
+                ) as response:
+                    if response.status != 200:
+                        logger.error(f"Kroki API error: {response.status}")
+                        return await ctx.reply(await tr("An error occurred generating the family tree.", ctx))
 
-                    file = discord.File(tmp_file_path, filename="family_tree.png")
-                    await ctx.reply(embed=embed, file=file)
-                finally:
-                    if os.path.exists(tmp_file_path):
-                        os.unlink(tmp_file_path)
+                    image_data = await response.read()
+
+            # Create Discord file from the image data
+            embed = discord.Embed(
+                title=f"Family Tree for {target.display_name}",
+                color=discord.Color.blue()
+            )
+            embed.set_image(url="attachment://family_tree.png")
+
+            file = discord.File(io.BytesIO(image_data), filename="family_tree.png")
+            await ctx.reply(embed=embed, file=file)
 
         except Exception as e:
             logger.error(f"Family tree command error: {e}")

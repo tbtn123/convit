@@ -11,7 +11,29 @@ from utils.singleton import BASE_TICK
 from .items import get_inventory_total, get_inventory_penalty, get_inventory_warning
 from utils.parser import parse_amount, AmountParseError  # Added for flexible amount parsing
 
+async def calculate_transfer_tax(db, guild_id: int, amount: int):
+    """Calculate transfer tax for a given amount in a guild.
 
+    Returns:
+        tuple: (tax_amount, remaining_amount)
+    """
+    try:
+        async with db.acquire() as conn:
+            tax_rate = await conn.fetchval(
+                "SELECT transfer_tax_rate FROM guild_config WHERE guild_id = $1",
+                guild_id
+            )
+
+            if tax_rate is None:
+                tax_rate = 0.0
+
+            tax_amount = int(amount * tax_rate)
+            remaining_amount = amount - tax_amount
+
+            return tax_amount, remaining_amount
+    except Exception:
+        # If there's any error, assume no tax
+        return 0, amount
 
 BASE_COMM = 0.05
 MULTIPLIERS   = [1,   2,   3,   5,    10,  0,  -1,  -2]
@@ -505,6 +527,15 @@ class Econ(commands.Cog):
                     materials_found = []
                     
                     # Roll for materials
+
+                    if random.random() < 0.50:
+                        scrap_amt = random.randint(1, 3)
+                        await conn.execute("""
+                            INSERT INTO inventory (id, item_id, quantity) VALUES ($1, 3, $2)
+                            ON CONFLICT (id, item_id) DO UPDATE SET quantity = inventory.quantity + $2
+                        """, uid, scrap_amt)
+                        materials_found.append(f"{scrap_amt}x Scrap")
+
                     if random.random() < 0.40:
                         wood_amt = random.randint(1, 3)
                         await conn.execute("""
@@ -754,21 +785,33 @@ class Econ(commands.Cog):
                 coins = await conn.fetchval("SELECT coins FROM users WHERE id = $1", giver_id)
                 if coins is None:
                     return await ctx.send(embed=make_embed("Error", "User data not found.", discord.Color.red()))
-                
+
                 # Parse amount using parser utility (supports 'all', '50%', '!100', etc.)
                 try:
                     parsed_amount = parse_amount(amount, coins)
                 except AmountParseError as e:
                     return await ctx.send(embed=make_embed("Invalid amount", str(e), discord.Color.red()))
-                
+
                 if parsed_amount <= 0:
                     return await ctx.send(embed=make_embed("Invalid amount", "Amount must be greater than 0.", discord.Color.red()))
-                
+
                 if coins < parsed_amount:
                     return await ctx.send(embed=make_embed("Insufficient funds", "You don't have enough coins.", discord.Color.red()))
 
+            # Calculate transfer tax
+            tax_amount, remaining_amount = await calculate_transfer_tax(self.bot.db, ctx.guild.id, parsed_amount)
+
             view = ConfirmGiveView(giver_id, target_id, parsed_amount, self)
-            embed = make_embed("Confirm Transfer", f"Send **{parsed_amount}** coins to {target.mention}?", discord.Color.blurple())
+            embed = make_embed(
+                "Confirm Transfer",
+                f"Send **{parsed_amount}** coins to {target.mention}?\n\n"
+                f"**Tax Rate:** {tax_amount/parsed_amount*100:.1f}%\n"
+                f"**Transfer Tax:** {tax_amount} coins\n"
+                f"**Target will receive:** {remaining_amount} coins",
+                discord.Color.blurple()
+            )
+
+            embed.set_footer(text=f"The tax money ({tax_amount} coins) will go to server fund")
             await ctx.send(embed=embed, view=view)
         except Exception:
             traceback.print_exc()
@@ -776,17 +819,45 @@ class Econ(commands.Cog):
 
     async def _give_confirmed(self, interaction: discord.Interaction, giver_id: int, target_id: int, amount: int):
         try:
+            
+            guild_id = interaction.guild.id if interaction.guild else None
+            if not guild_id:
+                return await interaction.followup.send(embed=make_embed("Error", "Cannot determine server for tax calculation.", discord.Color.red()), ephemeral=True)
+
+            # Calculate transfer tax
+            tax_amount, remaining_amount = await calculate_transfer_tax(self.bot.db, guild_id, amount)
+
             async with self.bot.db.acquire() as conn:
                 async with conn.transaction():
                     giver = await conn.fetchrow("SELECT coins FROM users WHERE id = $1 FOR UPDATE", giver_id)
                     if not giver or giver["coins"] < amount:
                         return await interaction.followup.send(embed=make_embed("Failed", "Insufficient funds.", discord.Color.red()), ephemeral=True)
 
-                    await conn.execute("UPDATE users SET coins = coins - $1 WHERE id = $2", amount, giver_id)
-                    await conn.execute("UPDATE users SET coins = coins + $1 WHERE id = $2", amount, target_id)
+                
+                    await conn.execute("INSERT INTO guilds (id) VALUES ($1) ON CONFLICT (id) DO NOTHING", guild_id)
 
-            # Edit original message that had the view
-            await interaction.edit_original_response(embed=make_embed("Transfer Complete", f"Transferred **{amount}** coins to <@{target_id}>.", discord.Color.green()), view=None)
+                   
+                    await conn.execute("UPDATE users SET coins = coins - $1 WHERE id = $2", amount, giver_id)
+                  
+                    await conn.execute("UPDATE users SET coins = coins + $1 WHERE id = $2", remaining_amount, target_id)
+                 
+                    if tax_amount > 0:
+                        await conn.execute("UPDATE guilds SET coins = coins + $1 WHERE id = $2", tax_amount, guild_id)
+
+           
+            if tax_amount > 0:
+                await interaction.edit_original_response(embed=make_embed(
+                    "Transfer Complete",
+                    f"Transferred **{remaining_amount}** coins to <@{target_id}>.\n"
+                    f"Tax collected by server: **{tax_amount}** coins ({tax_amount/amount*100:.1f}%)",
+                    discord.Color.green()
+                ), view=None)
+            else:
+                await interaction.edit_original_response(embed=make_embed(
+                    "Transfer Complete",
+                    f"Transferred **{remaining_amount}** coins to <@{target_id}>.",
+                    discord.Color.green()
+                ), view=None)
         except Exception as e:
             traceback.print_exc()
             try:

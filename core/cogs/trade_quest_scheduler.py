@@ -1,15 +1,16 @@
 from discord.ext import commands
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
 import random
 
 class TradeQuestScheduler(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.scheduler = AsyncIOScheduler()
+        # Run daily at 0:00 UTC+7 (Asia/Bangkok timezone)
         self.scheduler.add_job(
             self.generate_trade_quests,
-            IntervalTrigger(hours=24),
+            CronTrigger(hour=0, minute=0, timezone='Asia/Bangkok'),
             name="Trade Quest Generation"
         )
         self.scheduler.start()
@@ -17,20 +18,18 @@ class TradeQuestScheduler(commands.Cog):
     async def generate_trade_quests(self):
         try:
             async with self.bot.db.acquire() as conn:
-                active_count = await conn.fetchval("SELECT COUNT(*) FROM trade_quests WHERE expires_at > NOW()")
+                # Reset: Remove all existing trade quests
+                await conn.execute("DELETE FROM trade_quests")
 
-                if active_count >= 15:
-                    return
-
-                quests_to_generate = min(5, 15 - active_count)
+                # Generate exactly 5 new quests
+                quests_to_generate = 5
 
                 generated = 0
                 for _ in range(quests_to_generate):
                     if await self.generate_single_quest(conn):
                         generated += 1
 
-                if generated > 0:
-                    print(f"Generated {generated} new trade quests. Total active: {active_count + generated}")
+                print(f"Reset trade quests and generated {generated} new quests")
 
         except Exception as e:
             print(f"Error generating trade quests: {e}")
@@ -55,12 +54,12 @@ class TradeQuestScheduler(commands.Cog):
             base_value = await self.get_item_base_value(conn, item['id'])
             payout = int(base_value * amount * (0.6 + trust_level * 0.04))
 
-            timeout_hours = 24
+            timeout_days = 7
 
             await conn.execute("""
                 INSERT INTO trade_quests (trust_level, item_id, item_amount, payout, expires_at)
-                VALUES ($1, $2, $3, $4, NOW() + INTERVAL '${5} hours')
-            """, trust_level, item['id'], amount, payout, timeout_hours)
+                VALUES ($1, $2, $3, $4, NOW() + INTERVAL '1 day' * $5)
+            """, trust_level, item['id'], amount, payout, timeout_days)
 
             return True
         except Exception:

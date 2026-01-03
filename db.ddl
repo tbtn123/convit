@@ -87,7 +87,7 @@ CREATE TABLE public.global_shop ( pool_id int4 NOT NULL, price int4 NOT NULL, st
 
 -- DROP TABLE public.guild_config;
 
-CREATE TABLE public.guild_config ( guild_id int8 NOT NULL, post_channel_id int8 NULL, allow_post bool DEFAULT true NULL, allow_crosspost bool DEFAULT false NULL, api_key text NULL, broadcast_vc_id int8 NULL, prefix varchar NULL, allow_rob bool DEFAULT true NOT NULL, locale text NULL, CONSTRAINT server_config_pkey PRIMARY KEY (guild_id));
+CREATE TABLE public.guild_config ( guild_id int8 NOT NULL, api_key text NULL, prefix varchar NULL, allow_rob bool DEFAULT true NOT NULL, locale text NULL, transfer_tax_rate float4 DEFAULT 0.0 NULL, CONSTRAINT server_config_pkey PRIMARY KEY (guild_id));
 
 
 -- public.guilds definition
@@ -135,6 +135,23 @@ CREATE TABLE public.items ( id serial4 NOT NULL, "name" text NOT NULL, descripti
 CREATE TABLE public.lottery ( id serial4 NOT NULL, user_id int8 NOT NULL);
 
 
+-- public.marriages definition
+
+-- Drop table
+
+-- DROP TABLE public.marriages;
+
+CREATE TABLE public.marriages ( spouse_a int8 NOT NULL, spouse_b int8 NOT NULL, created_at timestamptz DEFAULT now() NULL, CONSTRAINT chk_marriage_order CHECK ((spouse_a < spouse_b)), CONSTRAINT pk_marriages PRIMARY KEY (spouse_a, spouse_b));
+CREATE INDEX idx_marriages_lookup ON public.marriages USING btree (spouse_a, spouse_b);
+
+-- Table Triggers
+
+create trigger trg_check_marriage before
+insert
+    on
+    public.marriages for each row execute function fn_check_marriage();
+
+
 -- public.mine definition
 
 -- Drop table
@@ -151,6 +168,25 @@ CREATE TABLE public.mine ( server_id int8 NOT NULL, last_reset timestamp DEFAULT
 -- DROP TABLE public.otp_sessions;
 
 CREATE TABLE public.otp_sessions ( user_id int8 NOT NULL, otp text NOT NULL, session_token text NULL, created_at timestamp DEFAULT now() NULL, expires_at timestamp NOT NULL, used bool DEFAULT false NULL, CONSTRAINT otp_sessions_pkey PRIMARY KEY (user_id));
+
+
+-- public.parents definition
+
+-- Drop table
+
+-- DROP TABLE public.parents;
+
+CREATE TABLE public.parents ( child_id int8 NOT NULL, parent_id int8 NOT NULL, created_at timestamptz DEFAULT now() NULL, CONSTRAINT chk_no_self_parent CHECK ((child_id <> parent_id)), CONSTRAINT pk_parents PRIMARY KEY (child_id));
+CREATE INDEX idx_parents_parent ON public.parents USING btree (parent_id);
+
+-- Table Triggers
+
+create trigger trg_check_parents before
+insert
+    or
+update
+    on
+    public.parents for each row execute function fn_check_parents();
 
 
 -- public.recipes definition
@@ -315,13 +351,13 @@ CREATE TABLE public.account ( id text NOT NULL, "accountId" text NOT NULL, "prov
 CREATE TABLE public.current_effects ( id serial4 NOT NULL, user_id int8 NOT NULL, effect_id int8 NOT NULL, ticks int8 DEFAULT 0 NOT NULL, applied_at timestamp DEFAULT now() NOT NULL, duration int8 DEFAULT 0 NOT NULL, CONSTRAINT current_effects_pkey PRIMARY KEY (user_id, effect_id), CONSTRAINT current_effects_user_effects_fk FOREIGN KEY (effect_id) REFERENCES public.user_effects(id) ON DELETE CASCADE);
 
 
--- public.recipe_cost_items definition
+-- public.item_weapons definition
 
 -- Drop table
 
--- DROP TABLE public.recipe_cost_items;
+-- DROP TABLE public.item_weapons;
 
-CREATE TABLE public.recipe_cost_items ( recipe_id int4 NOT NULL, item_id int4 NOT NULL, quantity int4 NOT NULL, CONSTRAINT recipe_cost_items_pkey PRIMARY KEY (recipe_id, item_id), CONSTRAINT recipe_cost_items_item_id_fkey FOREIGN KEY (item_id) REFERENCES public.items(id), CONSTRAINT recipe_cost_items_recipe_id_fkey FOREIGN KEY (recipe_id) REFERENCES public.recipes(id) ON DELETE CASCADE);
+CREATE TABLE public.item_weapons ( item_id int4 NOT NULL, damage_min int4 NOT NULL, damage_max int4 NOT NULL, crit_rate float8 DEFAULT 0.0 NULL, weapon_type text NOT NULL, break_chance float8 DEFAULT 0.0 NULL, needs_ammo bool DEFAULT false NULL, ammo_item_id int4 NULL, mag_capacity int4 DEFAULT 1 NULL, CONSTRAINT item_weapons_pkey PRIMARY KEY (item_id), CONSTRAINT item_weapons_ammo_item_id_fkey FOREIGN KEY (ammo_item_id) REFERENCES public.items(id), CONSTRAINT item_weapons_item_id_fkey FOREIGN KEY (item_id) REFERENCES public.items(id));
 
 
 -- public.recipe_require_items definition
@@ -367,145 +403,3 @@ CREATE TABLE public.todo ( id serial4 NOT NULL, user_id int8 NOT NULL, title tex
 -- DROP TABLE public.trade_quests;
 
 CREATE TABLE public.trade_quests ( id serial4 NOT NULL, trust_level int4 NULL, item_id int4 NULL, item_amount int4 NOT NULL, payout int8 NOT NULL, expires_at timestamp NOT NULL, created_at timestamp DEFAULT now() NULL, CONSTRAINT trade_quests_pkey PRIMARY KEY (id), CONSTRAINT trade_quests_trust_level_check CHECK (((trust_level >= 1) AND (trust_level <= 9))), CONSTRAINT trade_quests_item_id_fkey FOREIGN KEY (item_id) REFERENCES public.items(id));
-
-
-
-
-
-CREATE TABLE IF NOT EXISTS marriages (
-    spouse_a   BIGINT NOT NULL,
-    spouse_b   BIGINT NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT now(),
-
-    CONSTRAINT pk_marriages
-        PRIMARY KEY (spouse_a, spouse_b),
-
-    CONSTRAINT chk_marriage_order
-        CHECK (spouse_a < spouse_b)
-);
-
-
-CREATE TABLE IF NOT EXISTS parents (
-    child_id   BIGINT NOT NULL,
-    parent_id  BIGINT NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT now(),
-
-    CONSTRAINT pk_parents
-        PRIMARY KEY (child_id, parent_id),
-
-    CONSTRAINT chk_no_self_parent
-        CHECK (child_id <> parent_id)
-);
-
-
--- Updated sibling check and recursive ancestor/descendant check in fn_check_marriage
-CREATE OR REPLACE FUNCTION fn_check_marriage()
-RETURNS TRIGGER AS $$
-DECLARE
-    is_incest BOOLEAN;
-BEGIN
-    -- self marriage (defensive)
-    IF NEW.spouse_a = NEW.spouse_b THEN
-        RAISE EXCEPTION 'self_marriage_prohibited';
-    END IF;
-
-    -- already married (explicit, dù PK đã chặn)
-    IF EXISTS (
-        SELECT 1 FROM marriages
-        WHERE spouse_a = NEW.spouse_a
-          AND spouse_b = NEW.spouse_b
-    ) THEN
-        RAISE EXCEPTION 'already_married';
-    END IF;
-
-    -- Check if they are siblings (share at least one common parent)
-    IF EXISTS (
-        SELECT 1 FROM parents p1
-        JOIN parents p2 ON p1.parent_id = p2.parent_id
-        WHERE p1.child_id = NEW.spouse_a 
-          AND p2.child_id = NEW.spouse_b
-    ) THEN
-        RAISE EXCEPTION 'siblings_prohibited';
-    END IF;
-
-    -- Enhanced incest check: prevent marriage between any direct ancestor/descendant
-    WITH RECURSIVE all_ancestors_a(ancestor_id) AS (
-        SELECT parent_id FROM parents WHERE child_id = NEW.spouse_a
-        UNION
-        SELECT p.parent_id FROM parents p JOIN all_ancestors_a a ON p.child_id = a.ancestor_id
-    ),
-    all_ancestors_b(ancestor_id) AS (
-        SELECT parent_id FROM parents WHERE child_id = NEW.spouse_b
-        UNION
-        SELECT p.parent_id FROM parents p JOIN all_ancestors_b a ON p.child_id = a.ancestor_id
-    )
-    SELECT EXISTS (
-        SELECT 1 FROM all_ancestors_b WHERE ancestor_id = NEW.spouse_a
-        UNION
-        SELECT 1 FROM all_ancestors_a WHERE ancestor_id = NEW.spouse_b
-    ) INTO is_incest;
-
-    IF is_incest THEN
-        RAISE EXCEPTION 'incest_prohibited';
-    END IF;
-
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS trg_check_marriage ON marriages;
-
-CREATE TRIGGER trg_check_marriage
-BEFORE INSERT ON marriages
-FOR EACH ROW
-EXECUTE FUNCTION fn_check_marriage();
-
--- Updated genealogical loop check in fn_check_parents
-CREATE OR REPLACE FUNCTION fn_check_parents()
-RETURNS TRIGGER AS $$
-BEGIN
-    -- self parenting
-    IF NEW.child_id = NEW.parent_id THEN
-        RAISE EXCEPTION 'self_parenting_prohibited';
-    END IF;
-
-    -- parent cannot be spouse
-    IF EXISTS (
-        SELECT 1 FROM marriages
-        WHERE spouse_a = LEAST(NEW.child_id, NEW.parent_id)
-          AND spouse_b = GREATEST(NEW.child_id, NEW.parent_id)
-    ) THEN
-        RAISE EXCEPTION 'spouse_parenting_prohibited';
-    END IF;
-
-    -- Enhanced genealogical loop check: ensure parent is not a descendant of child
-    IF EXISTS (
-        WITH RECURSIVE descendants(id) AS (
-            SELECT child_id FROM parents WHERE parent_id = NEW.child_id
-            UNION
-            SELECT p.child_id FROM parents p JOIN descendants d ON p.parent_id = d.id
-        )
-        SELECT 1 FROM descendants WHERE id = NEW.parent_id
-    ) THEN
-        RAISE EXCEPTION 'genealogical_paradox';
-    END IF;
-
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS trg_check_parents ON parents;
-
-CREATE TRIGGER trg_check_parents
-BEFORE INSERT OR UPDATE ON parents
-FOR EACH ROW
-EXECUTE FUNCTION fn_check_parents();
-
-
--- Lookup parent -> children
-CREATE INDEX IF NOT EXISTS idx_parents_parent
-    ON parents(parent_id);
-
--- Fast marriage lookup
-CREATE INDEX IF NOT EXISTS idx_marriages_lookup
-    ON marriages(spouse_a, spouse_b);

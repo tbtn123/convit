@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 from datetime import datetime, timezone
+import traceback
 
 
 class CategorySelect(discord.ui.Select):
@@ -164,12 +165,12 @@ class HelpView(discord.ui.View):
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
-        # try to edit the message to disable the view; ignore failures
-        try:
-            # attempt to find the original message and edit it; when the view times out it's usually fine to just stop
-            pass
-        finally:
-            self.stop()
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except:
+                pass
+        self.stop()
 
 
 class HelpCommand(commands.Cog):
@@ -194,7 +195,7 @@ class HelpCommand(commands.Cog):
             if cog_commands:
                 cog_data[cog_name] = {
                     'commands': cog_commands,
-                    'description': self.get_cog_description(cog_name, cog)
+                    'description': getattr(cog, 'description', f"Commands for {cog_name}")
                 }
         
         return cog_data
@@ -229,9 +230,7 @@ class HelpCommand(commands.Cog):
     
     @commands.hybrid_command(name="help", description="Display the help menu with all available commands")
     async def help(self, ctx, command_name: str = None):
-        """Display an interactive help menu with dropdown category selection."""
         try:
-            # If specific command requested, show single command help
             if command_name:
                 command = self.bot.get_command(command_name)
                 if not command:
