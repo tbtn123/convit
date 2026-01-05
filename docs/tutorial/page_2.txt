@@ -1,0 +1,13 @@
+Let's talk about your core stats!
+
+**Energy**: Your stamina (max 100). Required for work, mining, gambling. Use /health to check it!
+
+**Mood**: Happiness meter (max 100) that affects success rates. High mood = better chances.
+
+**Status Effects**:
+- Overworked: Can't work 15min
+- Injured: Can't RPG 5min  
+- Gambling Addiction: Bigger mood swings
+- Motivated/Demoralized: Work bonuses
+
+All effects wear off automatically or can be cured!

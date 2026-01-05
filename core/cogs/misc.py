@@ -479,5 +479,97 @@ class Ping(commands.Cog):
 
 
 
+    @commands.hybrid_command(name="guide", description="View the bot tutorial guide")
+    async def guide(self, ctx: commands.Context):
+        """Display the bot tutorial guide with pagination"""
+        try:
+            await ctx.defer()
+
+            # Read all tutorial pages
+            pages_content = []
+            for i in range(1, 8):
+                try:
+                    with open(f"docs/tutorial/page_{i}.txt", "r", encoding="utf-8") as f:
+                        content = f.read().strip()
+                        if content:
+                            pages_content.append(content)
+                except FileNotFoundError:
+                    continue
+
+            if not pages_content:
+                await ctx.reply("Tutorial guide not available.")
+                return
+
+            # Create embeds for each page
+            embeds = []
+            page_titles = [
+                "Welcome to the Bot!",
+                "Core Stats & Effects",
+                "Items & Inventory",
+                "Economy & Trading",
+                "Resource Gathering",
+                "Combat & RPG",
+                "Social Features & Games"
+            ]
+
+            for i, (content, title) in enumerate(zip(pages_content, page_titles)):
+                embed = discord.Embed(
+                    title=title,
+                    description=content,
+                    color=discord.Color.blue(),
+                    timestamp=datetime.datetime.utcnow()
+                )
+                embed.set_footer(text=f"Page {i+1}/{len(pages_content)}")
+                embeds.append(embed)
+
+            # Send first page
+            if len(embeds) == 1:
+                await ctx.reply(embed=embeds[0])
+            else:
+                view = GuideView(embeds, ctx.author.id)
+                await ctx.reply(embed=embeds[0], view=view)
+
+        except Exception as e:
+            await ctx.reply(f"Error loading guide: {e}")
+
+
 async def setup(bot):
     await bot.add_cog(Ping(bot))
+
+
+class GuideView(discord.ui.View):
+    def __init__(self, embeds, user_id):
+        super().__init__(timeout=300)
+        self.embeds = embeds
+        self.current_page = 0
+        self.user_id = user_id
+
+        self.prev_button = discord.ui.Button(label="Previous", style=discord.ButtonStyle.secondary)
+        self.next_button = discord.ui.Button(label="Next", style=discord.ButtonStyle.secondary)
+
+        self.prev_button.callback = self.prev_page
+        self.next_button.callback = self.next_page
+
+        self.add_item(self.prev_button)
+        self.add_item(self.next_button)
+        self.update_buttons()
+
+    def update_buttons(self):
+        self.prev_button.disabled = self.current_page == 0
+        self.next_button.disabled = self.current_page >= len(self.embeds) - 1
+
+    async def prev_page(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("This guide is not for you.", ephemeral=True)
+
+        self.current_page = max(0, self.current_page - 1)
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.embeds[self.current_page], view=self)
+
+    async def next_page(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("This guide is not for you.", ephemeral=True)
+
+        self.current_page = min(len(self.embeds) - 1, self.current_page + 1)
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.embeds[self.current_page], view=self)

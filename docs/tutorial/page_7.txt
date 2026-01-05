@@ -1,0 +1,11 @@
+Social features and games!
+
+**Relationships**: /marry (3 partners max), /adopt (5 children max), /relationships, /family-tree.
+
+**Games**:
+- **Word Chain**: /wordchain create/join/start - Team word game
+- **Roulette**: /gr create/join/start - Deadly revolver game  
+- **Joblessnaire**: /joblessnaire <bet> - Quiz show, 1000x payout
+- **Blackjack**: /blackjack <bet> - Card game
+
+All games support flexible betting. Have fun!

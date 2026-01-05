@@ -1,0 +1,14 @@
+Let's manage your items and weapons!
+
+**Inventory**: Limited slots - overload gives 25% penalty. Use /inventory to view.
+
+**Weapons**: 
+- Fists: Default, no ammo
+- Melee: Damage ranges, can break
+- Ranged: Need ammo, higher damage
+
+**Ammo**: Limited per magazine, reload in combat.
+
+**Items**: Materials (work/mining), tools (pickaxes), consumables (potions), weapons, seeds.
+
+Equip your best gear before RPG battles!

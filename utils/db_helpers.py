@@ -91,12 +91,22 @@ async def check_has_user_upvoted(user_id):
     try:
         url = f"https://top.gg/api/bots/{TOPGG_BOT_ID}/check?userId={user_id}"
         headers = {"Authorization": TOPGG_API_TOKEN}
-        async with aiohttp.ClientSession() as session:
+        
+        # Add timeout and better error handling
+        timeout = aiohttp.ClientTimeout(total=5)  # 5 second timeout
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url, headers=headers) as resp:
-                if resp.status != 200: return False
+                if resp.status != 200: 
+                    logger.warning(f"TopGG API returned status {resp.status} for user {user_id}")
+                    return False
                 data = await resp.json()
                 return bool(data.get("voted", 0))
-    except: return False
+    except asyncio.TimeoutError:
+        logger.warning(f"TopGG API timeout for user {user_id}")
+        return False
+    except Exception as e:
+        logger.warning(f"TopGG API error for user {user_id}: {e}")
+        return False
 
 async def get_active_effects(db, user_id: int):
     async with db.acquire() as conn:

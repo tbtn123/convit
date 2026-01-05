@@ -1,0 +1,11 @@
+Let's gather some resources!
+
+**Mining**: /mine (needs pickaxe, costs 10 energy). Move depths in 5m increments.
+
+**Zones**: Surface→Iron→Gold→Diamond (deeper = better loot).
+
+**Events**: Cave-in (reset), Rich Vein (3x rewards), Gas Pocket (-30 energy), Treasure (free loot).
+
+**Farming**: /farm plant/harvest. Up to 5 farms.
+
+**Crafting**: /craft items, /recipes to view. Create gear from materials.

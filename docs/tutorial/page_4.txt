@@ -1,0 +1,17 @@
+Time to learn about money and trading!
+
+**Coins**: Main currency. Check with /balance.
+
+**Work**: /work = 200-800 coins, 10 energy, 30s cooldown. May get materials!
+
+**Gambling** (1 energy each):
+- /slot-machine: 3-reel slots
+- /flipbet: Heads/tails
+- /scratchcard: Scratch 3 spots (100+ bet)
+- /blackjack: Vs dealer
+
+**Player Trading**: /market sell/list/buy items.
+
+**NPC Quests**: /trade-quest show (trust levels affect scam risk 10-90%).
+
+**Server Funds**: Guild admins manage shared coins with taxes.

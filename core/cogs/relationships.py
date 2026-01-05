@@ -314,22 +314,23 @@ class Relationship(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    
+
     def _get_user_friendly_error(self, error_msg: str) -> str:
         """Convert database error messages to user-friendly messages"""
         error_mappings = {
-            'self_marriage_prohibited': "You cannot marry yourself!",
-            'already_married': "You are already married to this person!",
-            'siblings_prohibited': "You cannot marry your sibling!",
-            'incest_prohibited': "You cannot marry a family member!",
-            'too_closely_related': "You are too closely related to marry!",
+            'self_marriage_prohibited': "what the.... you got the wrong meaning of loving yourself bruh",
+            'already_married': "you cant marry someone you married. i suggest to divorce and marry again",
+            'siblings_prohibited': "you cannot marry your sibling...",
+            'incest_prohibited': "You cannot marry a family member...",
+            'too_closely_related': "not sweet home.....",
             'self_parenting_prohibited': "You cannot adopt yourself!",
             'spouse_parenting_prohibited': "You cannot adopt your spouse!",
             'genealogical_paradox': "This adoption would create a family tree paradox!",
             'cannot_adopt_spouse': "You cannot adopt your spouse!",
             'would_create_genealogical_loop': "This adoption would create a family tree loop!"
         }
-        
-        # Extract the actual error from PostgreSQL exception format
+
         if ':' in error_msg:
             error_key = error_msg.split(':')[-1].strip()
         else:
@@ -891,99 +892,6 @@ class Relationship(commands.Cog):
                 await tr("An error occurred during leave parents processing.", interaction), ephemeral=True
             )
 
-    @commands.hybrid_command(name="relationships", description="View relationship tree and information")
-    async def relationships(self, ctx: commands.Context, target: Optional[discord.Member] = None):
-        await ctx.defer()
-
-        if target is None:
-            target = ctx.author
-
-        await ensure_user(self.bot.db, target.id)
-
-        try:
-            data = await get_relationship_data(self.bot.db, target.id)
-            partners = await get_user_partners(self.bot.db, target.id)
-            children = await get_user_children(self.bot.db, target.id)
-
-            embed = discord.Embed(
-                title=f"Relationship Information",
-                color=discord.Color.blue()
-            )
-            embed.set_author(name=target.display_name, icon_url=target.display_avatar.url)
-
-            if partners:
-                partner_info = []
-                for partner_id in partners:
-                    try:
-                        partner_user = await self.bot.fetch_user(partner_id)
-                        partner_name = partner_user.name
-                        marriage_date_obj = await get_marriage_date(self.bot.db, target.id, partner_id)
-                        marriage_date = format_discord_timestamp(ensure_utc(marriage_date_obj), "D")
-                        partner_info.append(f":ring: {partner_name} (since {marriage_date})")
-                    except:
-                        partner_info.append(f":ring: <@{partner_id}>")
-
-                embed.add_field(
-                    name="Partners",
-                    value="\n".join(partner_info),
-                    inline=False
-                )
-            else:
-                embed.add_field(
-                    name="Partners",
-                    value="No partners",
-                    inline=False
-                )
-
-            if children:
-                child_info = []
-                for child_id in children:
-                    try:
-                        child_user = await self.bot.fetch_user(child_id)
-                        child_info.append(f" {child_user.name}")
-                    except:
-                        child_info.append(f"<@{child_id}>")
-
-                embed.add_field(
-                    name=" Children",
-                    value="\n".join(child_info),
-                    inline=False
-                )
-            else:
-                embed.add_field(
-                    name=" Children",
-                    value="No children",
-                    inline=False
-                )
-
-            parent_ids = await get_parents(self.bot.db, target.id)
-            if parent_ids:
-                parent_info = []
-                for parent_id in parent_ids:
-                    try:
-                        parent_user = await self.bot.fetch_user(parent_id)
-                        parent_info.append(f"👨‍👩‍👧‍👦 {parent_user.name}")
-                    except:
-                        parent_info.append(f"👨‍👩‍👧‍👦 <@{parent_id}>")
-
-                embed.add_field(
-                    name=":family: Parents",
-                    value="\n".join(parent_info),
-                    inline=False
-                )
-            else:
-                embed.add_field(
-                    name=":family: Parents",
-                    value="No parents recorded",
-                    inline=False
-                )
-
-            await ctx.reply(embed=embed)
-
-        except Exception as e:
-            logger.error(f"Relationships command error: {e}")
-            await ctx.reply(await tr("An error occurred retrieving relationship information.", ctx))
-
     @commands.hybrid_command(name="family-tree", description="View your family tree as a visual graph")
     async def family_tree(self, ctx: commands.Context, target: Optional[discord.Member] = None):
         await ctx.defer()
@@ -993,92 +901,105 @@ class Relationship(commands.Cog):
 
         await ensure_user(self.bot.db, target.id)
 
-        try:
-            family_data = await get_all_family_members(self.bot.db, target.id, max_generations=5)
+        family_data = await get_all_family_members(self.bot.db, target.id, max_generations=5)
+        if not family_data:
+            return await ctx.reply(await tr("No family data found.", ctx))
 
-            if not family_data:
-                return await ctx.reply(await tr("No family data found.", ctx))
+        user_names = {}
+        for m in family_data:
+            try:
+                u = await self.bot.fetch_user(m["id"])
+                user_names[m["id"]] = u.name[:20].replace('"', '\\"')
+            except:
+                user_names[m["id"]] = f"User {m['id']}"
 
-            # Build DOT source string
-            dot_lines = ['digraph FamilyTree {']
-            dot_lines.append('  rankdir=TB;')
-            dot_lines.append('  size="10,10";')
+        generations = {}
+        for m in family_data:
+            generations.setdefault(m["generation"], []).append(m["id"])
 
-            user_names = {}
-            for member in family_data:
-                try:
-                    user = await self.bot.fetch_user(member['id'])
-                    user_names[member['id']] = user.name[:20]
-                except:
-                    user_names[member['id']] = f"User {member['id']}"
+        families = {}
+        for m in family_data:
+            parents = tuple(sorted(p for p in m["parents"] if p))
+            if parents:
+                families.setdefault(parents, []).append(m["id"])
 
-            # Group members by generation for rank constraints
-            generations = {}
-            for member in family_data:
-                gen = member['generation']
-                if gen not in generations:
-                    generations[gen] = []
-                generations[gen].append(member['id'])
+        dot = []
+        dot.append("digraph G {")
+        dot.append("rankdir=TB;")
+        dot.append("nodesep=0.7;")
+        dot.append("ranksep=1.2;")
+        dot.append("splines=false;")
+        dot.append("concentrate=true;")
 
-            # Create nodes
-            for member in family_data:
-                user_id = member['id']
-                user_name = user_names[user_id].replace('"', '\\"')  # Escape quotes
+        for m in family_data:
+            uid = m["id"]
+            label = user_names[uid]
+            if m["generation"] == 0:
+                dot.append(f'"{uid}" [label="{label}", shape=box, style=filled, fillcolor=lightblue];')
+            elif m["generation"] < 0:
+                dot.append(f'"{uid}" [label="{label}", shape=ellipse, style=filled, fillcolor=lightgreen];')
+            else:
+                dot.append(f'"{uid}" [label="{label}", shape=ellipse, style=filled, fillcolor=lightyellow];')
 
-                if member['generation'] == 0:
-                    dot_lines.append(f'  "{user_id}" [label="{user_name}", shape=box, style=filled, fillcolor=lightblue];')
-                elif member['generation'] < 0:
-                    dot_lines.append(f'  "{user_id}" [label="{user_name}", shape=ellipse, style=filled, fillcolor=lightgreen];')
-                else:
-                    dot_lines.append(f'  "{user_id}" [label="{user_name}", shape=ellipse, style=filled, fillcolor=lightyellow];')
+        for ids in generations.values():
+            if len(ids) > 1:
+                dot.append("{ rank=same; " + " ".join(f'"{i}"' for i in ids) + " }")
 
-            # Add rank constraints to keep generations at same level
-            for gen, member_ids in generations.items():
-                if len(member_ids) > 1:
-                    rank_nodes = ' '.join(f'"{member_id}"' for member_id in member_ids)
-                    dot_lines.append(f'  {{ rank=same; {rank_nodes}; }}')
+        fam_i = 0
+        for parents, children in families.items():
+            f = f"F{fam_i}"
+            fam_i += 1
 
-            # Add parent-child edges
-            for member in family_data:
-                for parent_id in member['parents']:  # Handle multiple parents
-                    if parent_id:
-                        dot_lines.append(f'  "{parent_id}" -> "{member["id"]}";')
+            dot.append(f'{f} [shape=point, width=0.01];')
+            dot.append(f'{{ rank=same; {f}; }}')
 
-            # Add marriage edges
-            for member in family_data:
-                for partner_id in member['partners']:
-                    if partner_id > member['id']:  # Only add edge once per couple
-                        dot_lines.append(f'  "{member["id"]}" -> "{partner_id}" [style=dashed, color=red, arrowhead=none, label="Married"];')
+            for p in parents:
+                dot.append(f'"{p}" -> {f} [dir=none, weight=100];')
 
-            dot_lines.append('}')
-            dot_source = '\n'.join(dot_lines)
+            for c in children:
+                dot.append(f'{f} -> "{c}" [weight=100];')
 
-            # Send to Kroki API
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    'https://kroki.io/graphviz/png',
-                    data=dot_source,
-                    headers={'Content-Type': 'text/plain'}
-                ) as response:
-                    if response.status != 200:
-                        logger.error(f"Kroki API error: {response.status}")
-                        return await ctx.reply(await tr("An error occurred generating the family tree.", ctx))
+            if len(children) > 1:
+                dot.append("{ rank=same; " + " ".join(f'"{c}"' for c in children) + " }")
 
-                    image_data = await response.read()
+        seen = set()
+        for m in family_data:
+            u = m["id"]
+            for p in m["partners"]:
+                if p and p in user_names:
+                    k = tuple(sorted((u, p)))
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                    dot.append(f'{{ rank=same; "{u}" "{p}" }}')
+                    dot.append(
+                        f'"{u}" -> "{p}" '
+                        '[dir=none, style=dashed, color=red, weight=200, constraint=true];'
+                    )
 
-            # Create Discord file from the image data
-            embed = discord.Embed(
-                title=f"Family Tree for {target.display_name}",
-                color=discord.Color.blue()
-            )
-            embed.set_image(url="attachment://family_tree.png")
+        dot.append("}")
+        dot_src = "\n".join(dot)
 
-            file = discord.File(io.BytesIO(image_data), filename="family_tree.png")
-            await ctx.reply(embed=embed, file=file)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://kroki.io/graphviz/png",
+                data=dot_src,
+                headers={"Content-Type": "text/plain"},
+            ) as r:
+                if r.status != 200:
+                    return await ctx.reply(await tr("Failed to render family tree.", ctx))
+                img = await r.read()
 
-        except Exception as e:
-            logger.error(f"Family tree command error: {e}")
-            await ctx.reply(await tr("An error occurred generating the family tree.", ctx))
+        embed = discord.Embed(
+            title=f"Family Tree for {target.display_name}",
+            color=discord.Color.blue()
+        )
+        embed.set_image(url="attachment://family_tree.png")
+        await ctx.reply(
+            embed=embed,
+            file=discord.File(io.BytesIO(img), filename="family_tree.png")
+        )
+
 
 
 
@@ -1096,6 +1017,9 @@ class Relationship(commands.Cog):
                 logger.error(f"Failed to send cooldown message: {e}")
             return
         logger.error(f"Relationship command error: {type(error).__name__}: {error}")
+
+
+
 
 
 async def setup(bot):

@@ -1,0 +1,13 @@
+Ready for RPG combat?
+
+**Battles**: /rpg-battle starts adventures with safe zones to prepare.
+
+**Actions**: Attack, Defend (50% damage reduction), Reload ammo, Run (60% escape), Skip peaceful enemies.
+
+**Weapons**: Critical hits, break chance, ammo limits. Fists as backup.
+
+**Effects**: 5min injury cooldown, weapon durability, ammo consumption.
+
+**Rewards**: Materials, weapons, coins from victories.
+
+Safe zones: Use items, change weapons, check loot!
